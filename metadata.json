@@ -1,0 +1,6 @@
+{
+  "name": "EduVerify - APAAR Student Data Verification",
+  "description": "Government-tech administration dashboard for APAAR-based student data management, intake compliance, and validation for AICTE-approved institutions.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
