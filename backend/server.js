@@ -161,7 +161,9 @@ app.use(
                 process.env.CORS_ORIGIN === "*" ||
                 allowedOrigins.includes(normalized) ||
                 normalized.endsWith(".vercel.app") ||
-                normalized.endsWith(".onrender.com")
+                normalized.endsWith(".onrender.com") ||
+                normalized.endsWith(".up.railway.app") ||
+                normalized.endsWith(".railway.app")
             ) {
                 return callback(null, true);
             }

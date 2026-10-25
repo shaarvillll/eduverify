@@ -55,53 +55,54 @@ export const TopNav: React.FC<TopNavProps> = ({ onToggleMobileMenu }) => {
     }
   };
 
-  const getPageTitle = () => {
+  const getPageTitle = (short = false) => {
     switch (activeTab) {
       case 'overview':
-        return 'System Overview & Executive Dashboard';
+        return short ? 'Overview' : 'System Overview & Executive Dashboard';
       case 'students':
-        return 'Student Registry & APAAR Records';
+        return short ? 'Student Registry' : 'Student Registry & APAAR Records';
       case 'upload':
-        return 'Batch Data Upload & CSV Verification';
+        return short ? 'Batch Upload' : 'Batch Data Upload & CSV Verification';
       case 'issues':
-        return 'Intake & Data Validation Discrepancies';
+        return short ? 'Validation Issues' : 'Intake & Data Validation Discrepancies';
       case 'institutions':
-        return 'Approved Institutions & Intake Capacities';
+        return short ? 'Institutions' : 'Approved Institutions & Intake Capacities';
       case 'reports':
-        return 'Compliance Analytics & Regulatory Reports';
+        return short ? 'Reports & Audit' : 'Compliance Analytics & Regulatory Reports';
       case 'settings':
-        return 'Portal Settings & Demonstration Config';
+        return short ? 'Settings' : 'Portal Settings & Demonstration Config';
       default:
-        return 'Administration';
+        return 'EduVerify';
     }
   };
 
   return (
-    <header className="sticky top-0 z-30 flex items-center justify-between h-16 px-4 md:px-6 bg-white border-b border-slate-200">
+    <header className="sticky top-0 z-30 flex items-center justify-between h-16 px-3 sm:px-4 md:px-6 bg-white border-b border-slate-200">
       {/* Left Zone: Mobile toggle + Breadcrumb / Page Title */}
-      <div className="flex items-center gap-3 min-w-0">
+      <div className="flex items-center gap-2 sm:gap-3 min-w-0">
         <button
           onClick={onToggleMobileMenu}
-          className="p-2 -ml-2 text-slate-600 hover:text-slate-900 lg:hidden rounded-md"
+          className="p-2 -ml-1 text-slate-600 hover:text-slate-900 hover:bg-slate-100 lg:hidden rounded-md min-w-[36px] min-h-[36px] flex items-center justify-center shrink-0"
           aria-label="Open mobile menu"
         >
           <Menu className="w-5 h-5" />
         </button>
 
         <div className="flex flex-col min-w-0">
-          <div className="flex items-center gap-2 text-xs text-slate-600 font-medium truncate">
-            <span>EduVerify Portal</span>
+          <div className="hidden sm:flex items-center gap-1.5 text-[11px] text-slate-500 font-medium truncate">
+            <span>EduVerify</span>
             <span>/</span>
             <span className="capitalize">{activeTab}</span>
           </div>
           <h1 className="text-sm md:text-base font-semibold text-slate-900 truncate">
-            {getPageTitle()}
+            <span className="sm:hidden">{getPageTitle(true)}</span>
+            <span className="hidden sm:inline">{getPageTitle(false)}</span>
           </h1>
         </div>
       </div>
 
       {/* Center Zone: Quick Search Field */}
-      <div className="hidden md:flex items-center flex-1 max-w-md mx-6">
+      <div className="hidden md:flex items-center flex-1 max-w-xs lg:max-w-md mx-4">
         <form onSubmit={handleSearchSubmit} className="relative w-full">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
           <input
@@ -115,7 +116,7 @@ export const TopNav: React.FC<TopNavProps> = ({ onToggleMobileMenu }) => {
       </div>
 
       {/* Right Zone: Environment Chip, Notifications, Profile */}
-      <div className="flex items-center gap-2.5">
+      <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
         {/* Synthetic Data Chip */}
         <div className="hidden xl:flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium text-amber-800 bg-amber-50 border border-amber-200 rounded">
           <Info className="w-3.5 h-3.5 text-amber-600 shrink-0" />
@@ -125,10 +126,11 @@ export const TopNav: React.FC<TopNavProps> = ({ onToggleMobileMenu }) => {
         {/* Demo State Reset Button */}
         <button
           onClick={() => setShowResetConfirm(true)}
-          className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded border border-slate-200 transition-colors"
+          className="flex items-center gap-1.5 p-2 sm:px-2.5 sm:py-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded border border-slate-200 transition-colors min-w-[36px] min-h-[36px] justify-center"
           title="Reset demonstration state to original seed data"
+          aria-label="Reset demonstration state"
         >
-          <RotateCcw className="w-3.5 h-3.5" />
+          <RotateCcw className="w-3.5 h-3.5 text-slate-500 shrink-0" />
           <span className="hidden sm:inline">Reset Demo</span>
         </button>
 
@@ -137,7 +139,7 @@ export const TopNav: React.FC<TopNavProps> = ({ onToggleMobileMenu }) => {
           <button
             onClick={() => setShowNotifications(!showNotifications)}
             aria-label="View notifications"
-            className="relative p-2 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-md transition-colors"
+            className="relative p-2 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-md transition-colors min-w-[36px] min-h-[36px] flex items-center justify-center"
           >
             <Bell className="w-4 h-4" />
             {unreadCount > 0 && (
@@ -146,7 +148,7 @@ export const TopNav: React.FC<TopNavProps> = ({ onToggleMobileMenu }) => {
           </button>
 
           {showNotifications && (
-            <div className="absolute right-0 mt-2 w-80 md:w-96 bg-white rounded-lg shadow-xl border border-slate-200 overflow-hidden z-50">
+            <div className="fixed sm:absolute left-2 right-2 sm:left-auto sm:right-0 mt-2 sm:w-96 bg-white rounded-lg shadow-xl border border-slate-200 overflow-hidden z-50 max-h-[80vh]">
               <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 bg-slate-50">
                 <div className="flex items-center gap-2">
                   <span className="text-xs font-semibold text-slate-900">System Notifications</span>
@@ -199,9 +201,10 @@ export const TopNav: React.FC<TopNavProps> = ({ onToggleMobileMenu }) => {
         <div className="relative" ref={profileRef}>
           <button
             onClick={() => setShowProfileMenu(!showProfileMenu)}
-            className="flex items-center gap-2.5 p-1.5 rounded-md hover:bg-slate-100 transition-colors"
+            aria-label="User profile"
+            className="flex items-center gap-2 p-1 sm:p-1.5 rounded-md hover:bg-slate-100 transition-colors min-w-[36px] min-h-[36px]"
           >
-            <div className="w-8 h-8 rounded-full bg-slate-800 text-white flex items-center justify-center text-xs font-semibold">
+            <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-full bg-slate-800 text-white flex items-center justify-center text-xs font-semibold shrink-0">
               DA
             </div>
             <div className="hidden md:flex flex-col text-left">
@@ -213,10 +216,10 @@ export const TopNav: React.FC<TopNavProps> = ({ onToggleMobileMenu }) => {
           </button>
 
           {showProfileMenu && (
-            <div className="absolute right-0 mt-2 w-60 bg-white rounded-lg shadow-xl border border-slate-200 py-1.5 text-xs text-slate-700 z-50">
+            <div className="absolute right-0 mt-2 w-56 sm:w-60 bg-white rounded-lg shadow-xl border border-slate-200 py-1.5 text-xs text-slate-700 z-50">
               <div className="px-3.5 py-2 border-b border-slate-100">
                 <div className="font-semibold text-slate-900">Demo Administrator</div>
-                <div className="text-[11px] text-slate-600">admin.demo@aicte-india.org</div>
+                <div className="text-[11px] text-slate-600 truncate">admin.demo@aicte-india.org</div>
                 <div className="mt-1 flex items-center gap-1 text-[10px] text-emerald-700 font-medium">
                   <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
                   Full Verification Clearance

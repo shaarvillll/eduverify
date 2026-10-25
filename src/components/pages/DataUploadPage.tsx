@@ -371,30 +371,30 @@ export const DataUploadPage: React.FC = () => {
 
       {/* Distinction Badge: Preview vs Committed State */}
       {isCommitted ? (
-        <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-lg flex items-center justify-between">
+        <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-lg flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center">
+            <div className="w-8 h-8 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
               <CheckCircle className="w-5 h-5" />
             </div>
             <div>
               <h4 className="text-xs font-semibold text-emerald-950">
                 Batch Successfully Committed to PostgreSQL Registry
               </h4>
-              <p className="text-xs text-emerald-700">
+              <p className="text-xs text-emerald-700 mt-0.5">
                 {commitCount} records saved to PostgreSQL database eduverify. You can now inspect them in the Student Records tab.
               </p>
             </div>
           </div>
           <button
             onClick={() => setActiveTab('students')}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-emerald-700 hover:bg-emerald-800 rounded transition-colors"
+            className="flex items-center justify-center gap-1.5 px-3 py-2 min-h-[36px] text-xs font-semibold text-white bg-emerald-700 hover:bg-emerald-800 rounded transition-colors w-full sm:w-auto shrink-0"
           >
             <span>View in Records</span>
             <ArrowRight className="w-3.5 h-3.5" />
           </button>
         </div>
       ) : (
-        <div className="p-3 bg-amber-50/70 border border-amber-200 rounded-lg flex items-center justify-between text-xs text-amber-900">
+        <div className="p-3.5 bg-amber-50/70 border border-amber-200 rounded-lg flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs text-amber-900">
           <div className="flex items-center gap-2">
             <Info className="w-4 h-4 text-amber-600 shrink-0" />
             <span>
@@ -404,7 +404,7 @@ export const DataUploadPage: React.FC = () => {
           <button
             onClick={handleCommitImport}
             disabled={validCount === 0 || isSubmitting}
-            className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed rounded shadow-xs transition-colors shrink-0"
+            className="flex items-center justify-center gap-1.5 px-4 py-2 min-h-[38px] text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed rounded shadow-xs transition-colors w-full sm:w-auto shrink-0"
           >
             {isSubmitting ? (
               <>

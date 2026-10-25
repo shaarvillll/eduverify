@@ -416,10 +416,10 @@ export const StudentRecordsPage: React.FC = () => {
             />
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <button
               onClick={() => setRevealApaar(!revealApaar)}
-              className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-700 hover:text-slate-900 bg-slate-100 hover:bg-slate-200/80 rounded border border-slate-200 transition-colors"
+              className="flex items-center gap-1.5 px-3 py-2 min-h-[36px] text-xs font-medium text-slate-700 hover:text-slate-900 bg-slate-100 hover:bg-slate-200/80 rounded border border-slate-200 transition-colors"
               title="Toggle masking for synthetic test identifiers"
             >
               {revealApaar ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
@@ -432,7 +432,7 @@ export const StudentRecordsPage: React.FC = () => {
               searchQuery) && (
               <button
                 onClick={resetFilters}
-                className="flex items-center gap-1 px-2.5 py-2 text-xs font-medium text-rose-600 hover:text-rose-800 hover:bg-rose-50 rounded border border-rose-200 transition-colors"
+                className="flex items-center gap-1 px-2.5 py-2 min-h-[36px] text-xs font-medium text-rose-600 hover:text-rose-800 hover:bg-rose-50 rounded border border-rose-200 transition-colors"
               >
                 <RotateCcw className="w-3.5 h-3.5" />
                 <span>Reset Filters</span>
@@ -533,7 +533,77 @@ export const StudentRecordsPage: React.FC = () => {
           </div>
         </div>
 
-        <div className="overflow-x-auto">
+        {/* Mobile View: Cards (< 768px) */}
+        <div className="md:hidden divide-y divide-slate-100">
+          {paginatedStudents.length === 0 ? (
+            <div className="p-8 text-center text-slate-500">
+              <Filter className="w-8 h-8 text-slate-300 mx-auto mb-2" />
+              <div className="font-semibold text-slate-800 text-sm">No matching student records</div>
+              <p className="text-xs text-slate-400 mt-1">
+                Try adjusting your search criteria or clearing active filters.
+              </p>
+              <button
+                onClick={resetFilters}
+                className="mt-3 px-3 py-1.5 text-xs text-blue-600 hover:text-blue-800 font-medium border border-blue-200 rounded bg-blue-50"
+              >
+                Clear Filters
+              </button>
+            </div>
+          ) : (
+            paginatedStudents.map((student) => {
+              const displayApaar = revealApaar
+                ? (student.apaarTestId || '—')
+                : student.apaarTestId
+                ? `••••-••••-${student.apaarTestId.slice(-4)}`
+                : '—';
+
+              return (
+                <div
+                  key={student.id}
+                  className="p-3.5 space-y-2.5 bg-white hover:bg-slate-50 transition-colors"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <div className="font-semibold text-slate-900 text-sm">
+                        {student.fullName}
+                      </div>
+                      <div className="text-[11px] font-mono text-slate-400">
+                        {student.id}
+                      </div>
+                    </div>
+                    <StatusBadge status={student.validationStatus} />
+                  </div>
+
+                  <div className="text-xs text-slate-600 space-y-1 bg-slate-50 p-2.5 rounded border border-slate-100">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="text-slate-400 font-medium">Synthetic APAAR:</span>
+                      <span className="font-mono font-medium text-slate-800 bg-white px-1.5 py-0.5 rounded border border-slate-200">
+                        {displayApaar}
+                      </span>
+                    </div>
+                    <div className="truncate text-slate-800 font-medium pt-0.5" title={student.institutionName}>
+                      {student.institutionName}
+                    </div>
+                    <div className="flex items-center justify-between text-[11px] text-slate-500">
+                      <span className="truncate">{student.programmeName}</span>
+                      <span className="shrink-0 font-mono text-slate-400 ml-2">AY {student.academicYear}</span>
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={() => handleOpenStudent(student)}
+                    className="w-full flex items-center justify-center gap-1.5 py-2 px-3 text-xs font-semibold text-blue-700 bg-blue-50 hover:bg-blue-100 active:bg-blue-200 rounded border border-blue-200 transition-colors min-h-[38px]"
+                  >
+                    <span>View Dossier & Documents</span>
+                  </button>
+                </div>
+              );
+            })
+          )}
+        </div>
+
+        {/* Desktop View: Full Table (>= 768px) */}
+        <div className="hidden md:block overflow-x-auto">
           <table className="w-full text-left text-xs">
             <thead className="bg-slate-50 border-b border-slate-200 text-slate-600 font-semibold uppercase tracking-wider">
               <tr>
@@ -620,7 +690,7 @@ export const StudentRecordsPage: React.FC = () => {
         </div>
 
         {/* Pagination Controls */}
-        <div className="flex items-center justify-between px-4 py-3 border-t border-slate-200 bg-slate-50/50 text-xs">
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-2.5 px-4 py-3 border-t border-slate-200 bg-slate-50/50 text-xs">
           <div className="text-slate-500">
             Page <span className="font-semibold text-slate-900">{currentPage}</span> of{' '}
             <span className="font-semibold text-slate-900">{totalPages}</span>
@@ -630,18 +700,18 @@ export const StudentRecordsPage: React.FC = () => {
             <button
               onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
               disabled={currentPage === 1}
-              className="p-1.5 rounded border border-slate-200 bg-white text-slate-700 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed"
+              className="p-2 sm:p-1.5 rounded border border-slate-200 bg-white text-slate-700 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed min-w-[36px] min-h-[36px] flex items-center justify-center"
               aria-label="Previous page"
             >
               <ChevronLeft className="w-4 h-4" />
             </button>
-            <span className="px-2 py-1 font-mono text-slate-700">
+            <span className="px-3 py-1 font-mono text-slate-700">
               {currentPage} / {totalPages}
             </span>
             <button
               onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
               disabled={currentPage >= totalPages}
-              className="p-1.5 rounded border border-slate-200 bg-white text-slate-700 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed"
+              className="p-2 sm:p-1.5 rounded border border-slate-200 bg-white text-slate-700 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed min-w-[36px] min-h-[36px] flex items-center justify-center"
               aria-label="Next page"
             >
               <ChevronRight className="w-4 h-4" />
@@ -752,13 +822,13 @@ export const StudentRecordsPage: React.FC = () => {
                     accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg"
                     onChange={handleFileSelect}
                     disabled={isUploadingDoc}
-                    className="block w-full text-xs text-slate-600 file:mr-3 file:py-1.5 file:px-3 file:rounded file:border file:border-slate-300 file:text-xs file:font-semibold file:bg-white file:text-slate-700 hover:file:bg-slate-100 cursor-pointer"
+                    className="block w-full text-xs text-slate-600 file:mr-3 file:py-2 file:px-3 file:rounded file:border file:border-slate-300 file:text-xs file:font-semibold file:bg-white file:text-slate-700 hover:file:bg-slate-100 cursor-pointer"
                   />
                   <button
                     type="button"
                     onClick={handleUploadDocument}
                     disabled={!selectedUploadFile || isUploadingDoc}
-                    className={`flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded shrink-0 transition-colors ${
+                    className={`flex items-center justify-center gap-1.5 px-4 py-2 min-h-[38px] text-xs font-semibold rounded shrink-0 transition-colors ${
                       !selectedUploadFile || isUploadingDoc
                         ? 'bg-slate-200 text-slate-400 cursor-not-allowed'
                         : 'bg-blue-600 text-white hover:bg-blue-700 shadow-2xs'
@@ -780,7 +850,7 @@ export const StudentRecordsPage: React.FC = () => {
 
                 {/* Selected File Details */}
                 {selectedUploadFile && (
-                  <div className="flex items-center justify-between text-[11px] text-slate-600 bg-white p-2 rounded border border-slate-200">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-[11px] text-slate-600 bg-white p-2 rounded border border-slate-200">
                     <span className="truncate max-w-xs font-medium text-slate-800">
                       📄 {selectedUploadFile.name}
                     </span>
@@ -863,28 +933,32 @@ export const StudentRecordsPage: React.FC = () => {
                             : 'bg-blue-50 text-blue-700 border-blue-200';
 
                         return (
-                          <div key={doc.id} className="p-2.5 bg-white divide-y divide-slate-100 text-xs hover:bg-slate-50/70 transition-colors">
+                          <div key={doc.id} className="p-3 bg-white divide-y divide-slate-100 text-xs hover:bg-slate-50/70 transition-colors">
                             {/* Row 1: file info + status badges + extract button */}
-                            <div className="flex items-center justify-between gap-3 pb-2">
-                              <div className="flex items-center gap-2 min-w-0">
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 pb-2">
+                              <div className="flex items-start sm:items-center gap-2 min-w-0">
                                 {doc.mimeType === 'application/pdf' ? (
-                                  <FileText className="w-4 h-4 text-rose-600 shrink-0" />
+                                  <FileText className="w-4 h-4 text-rose-600 shrink-0 mt-0.5 sm:mt-0" />
                                 ) : (
-                                  <FileImage className="w-4 h-4 text-blue-600 shrink-0" />
+                                  <FileImage className="w-4 h-4 text-blue-600 shrink-0 mt-0.5 sm:mt-0" />
                                 )}
                                 <div className="min-w-0">
                                   <div className="font-medium text-slate-900 truncate" title={doc.originalFilename || 'Document'}>
                                     {doc.originalFilename || 'Document'}
                                   </div>
-                                  <div className="text-[10px] text-slate-400 font-mono">
-                                    ID: {doc.id} · {formatFileSize(doc.fileSize)} · {formatDate(doc.uploadedAt)}
-                                    {doc.pageCount != null && ` · ${doc.pageCount}p`}
+                                  <div className="text-[10px] text-slate-400 font-mono flex flex-wrap items-center gap-x-1.5">
+                                    <span>ID: {doc.id}</span>
+                                    <span>·</span>
+                                    <span>{formatFileSize(doc.fileSize)}</span>
+                                    <span>·</span>
+                                    <span>{formatDate(doc.uploadedAt)}</span>
+                                    {doc.pageCount != null && <span>· {doc.pageCount}p</span>}
                                     {renderConfidence(doc.ocrConfidence)}
                                   </div>
                                 </div>
                               </div>
 
-                              <div className="flex items-center gap-1.5 shrink-0">
+                              <div className="flex flex-wrap items-center gap-1.5 shrink-0 self-start sm:self-auto">
                                 <span className={`px-1.5 py-0.5 text-[10px] font-semibold rounded border uppercase ${statusColor}`}>
                                   {doc.processingStatus}
                                 </span>
@@ -895,7 +969,7 @@ export const StudentRecordsPage: React.FC = () => {
                                   <button
                                     onClick={() => handleExtractText(doc.id)}
                                     disabled={!!isExtractingDocId}
-                                    className="flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold rounded border bg-violet-50 text-violet-700 border-violet-200 hover:bg-violet-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                                    className="flex items-center gap-1 px-2.5 py-1 min-h-[28px] text-[10px] font-semibold rounded border bg-violet-50 text-violet-700 border-violet-200 hover:bg-violet-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                                     title={doc.processingStatus === 'FAILED' ? 'Retry text extraction' : 'Extract embedded text or run OCR'}
                                   >
                                     {isExtracting ? (
@@ -903,11 +977,11 @@ export const StudentRecordsPage: React.FC = () => {
                                     ) : (
                                       <RotateCcw className="w-3 h-3" />
                                     )}
-                                    {isExtracting ? 'Extracting…' : doc.processingStatus === 'FAILED' ? 'Retry OCR' : 'Extract Text'}
+                                    <span>{isExtracting ? 'Extracting…' : doc.processingStatus === 'FAILED' ? 'Retry OCR' : 'Extract Text'}</span>
                                   </button>
                                 )}
                                 {doc.processingStatus === 'PROCESSING' && (
-                                  <span className="flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold rounded border bg-amber-50 text-amber-700 border-amber-200">
+                                  <span className="flex items-center gap-1 px-2.5 py-1 text-[10px] font-semibold rounded border bg-amber-50 text-amber-700 border-amber-200">
                                     <Loader2 className="w-3 h-3 animate-spin" />
                                     Processing…
                                   </span>
@@ -917,18 +991,18 @@ export const StudentRecordsPage: React.FC = () => {
                                     <button
                                       onClick={() => handleExtractText(doc.id)}
                                       disabled={!!isExtractingDocId || isComparingDocId === doc.id}
-                                      className="flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold rounded border bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                                      className="flex items-center gap-1 px-2.5 py-1 min-h-[28px] text-[10px] font-semibold rounded border bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                                       title="Re-run text extraction"
                                     >
                                       {isExtracting ? <Loader2 className="w-3 h-3 animate-spin" /> : <RotateCcw className="w-3 h-3" />}
-                                      {isExtracting ? 'Extracting…' : 'Re-extract'}
+                                      <span>{isExtracting ? 'Extracting…' : 'Re-extract'}</span>
                                     </button>
 
                                     {doc.extractedText && (
                                       <button
                                         onClick={() => handleCompareDocument(doc.id)}
                                         disabled={isComparingDocId === doc.id || !!isExtractingDocId}
-                                        className="flex items-center gap-1 px-2.5 py-0.5 text-[10px] font-semibold rounded border bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                                        className="flex items-center gap-1 px-2.5 py-1 min-h-[28px] text-[10px] font-semibold rounded border bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                                         title="Compare extracted candidate fields with linked student record in PostgreSQL"
                                       >
                                         {isComparingDocId === doc.id ? (
@@ -936,7 +1010,7 @@ export const StudentRecordsPage: React.FC = () => {
                                         ) : (
                                           <ShieldCheck className="w-3 h-3 text-blue-600" />
                                         )}
-                                        {isComparingDocId === doc.id ? 'Comparing…' : 'Compare with Student Record'}
+                                        <span>{isComparingDocId === doc.id ? 'Comparing…' : 'Compare with Record'}</span>
                                       </button>
                                     )}
                                   </>
@@ -994,15 +1068,15 @@ export const StudentRecordsPage: React.FC = () => {
                             {/* Phase 2C: Mismatch Findings Section */}
                             {documentFindings[doc.id] && documentFindings[doc.id].length > 0 && (
                               <div className="pt-2 space-y-2 border-t border-slate-100 mt-2">
-                                <div className="flex items-center justify-between">
+                                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5">
                                   <div className="flex items-center gap-1.5">
                                     <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
                                     <span className="text-[10px] font-bold text-amber-900 uppercase tracking-wide">
-                                      Document vs Record Discrepancies ({documentFindings[doc.id].filter((f) => f.status === 'OPEN').length} Open)
+                                      Discrepancies ({documentFindings[doc.id].filter((f) => f.status === 'OPEN').length} Open)
                                     </span>
                                   </div>
-                                  <span className="text-[9px] text-amber-800 font-medium bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
-                                    Automated Check · Requires Human Review
+                                  <span className="text-[9px] text-amber-800 font-medium bg-amber-50 px-2 py-0.5 rounded border border-amber-200 self-start sm:self-auto">
+                                    Automated Check · Human Review Required
                                   </span>
                                 </div>
 
@@ -1031,7 +1105,7 @@ export const StudentRecordsPage: React.FC = () => {
                                         key={finding.id}
                                         className={`p-2.5 rounded border text-[11px] space-y-1.5 ${cardBg}`}
                                       >
-                                        <div className="flex items-center justify-between gap-2">
+                                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                                           <div className="flex items-center gap-1.5">
                                             <span className="font-semibold text-slate-900">
                                               {finding.fieldLabel}
@@ -1041,19 +1115,19 @@ export const StudentRecordsPage: React.FC = () => {
                                             </span>
                                           </div>
 
-                                          <div className="flex items-center gap-1">
+                                          <div className="flex items-center gap-1.5 self-end sm:self-auto">
                                             {finding.status === 'OPEN' ? (
                                               <>
                                                 <button
                                                   onClick={() => handleUpdateFindingStatus(finding.id, 'RESOLVED', doc.id)}
-                                                  className="px-2 py-0.5 text-[10px] font-medium rounded bg-white text-emerald-700 border border-emerald-300 hover:bg-emerald-50 transition-colors shadow-2xs"
+                                                  className="px-2.5 py-1 min-h-[28px] text-[10px] font-medium rounded bg-white text-emerald-700 border border-emerald-300 hover:bg-emerald-50 transition-colors shadow-2xs"
                                                   title="Mark finding as resolved"
                                                 >
                                                   Resolve
                                                 </button>
                                                 <button
                                                   onClick={() => handleUpdateFindingStatus(finding.id, 'DISMISSED', doc.id)}
-                                                  className="px-2 py-0.5 text-[10px] font-medium rounded bg-white text-slate-600 border border-slate-300 hover:bg-slate-100 transition-colors shadow-2xs"
+                                                  className="px-2.5 py-1 min-h-[28px] text-[10px] font-medium rounded bg-white text-slate-600 border border-slate-300 hover:bg-slate-100 transition-colors shadow-2xs"
                                                   title="Dismiss finding as harmless"
                                                 >
                                                   Dismiss
@@ -1062,7 +1136,7 @@ export const StudentRecordsPage: React.FC = () => {
                                             ) : (
                                               <button
                                                 onClick={() => handleUpdateFindingStatus(finding.id, 'OPEN', doc.id)}
-                                                className="flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium rounded bg-white text-blue-700 border border-blue-300 hover:bg-blue-50 transition-colors shadow-2xs"
+                                                className="flex items-center gap-1 px-2.5 py-1 min-h-[28px] text-[10px] font-medium rounded bg-white text-blue-700 border border-blue-300 hover:bg-blue-50 transition-colors shadow-2xs"
                                                 title="Reopen finding for review"
                                               >
                                                 <RotateCcw className="w-2.5 h-2.5" />
@@ -1141,26 +1215,26 @@ export const StudentRecordsPage: React.FC = () => {
               </div>
 
               {/* Action Buttons to mutate status */}
-              <div className="pt-2 flex flex-wrap items-center justify-end gap-2 border-t border-slate-100">
+              <div className="pt-3 flex flex-col sm:flex-row items-stretch sm:items-center justify-end gap-2 border-t border-slate-100">
                 <button
                   onClick={() => handleUpdateStatus('VALIDATED')}
-                  className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded font-medium transition-colors"
+                  className="flex items-center justify-center gap-1.5 px-3.5 py-2 min-h-[38px] bg-emerald-600 hover:bg-emerald-700 text-white rounded font-medium transition-colors text-xs shadow-2xs"
                 >
-                  <CheckCircle className="w-3.5 h-3.5" />
+                  <CheckCircle className="w-3.5 h-3.5 shrink-0" />
                   <span>Approve & Validate</span>
                 </button>
                 <button
                   onClick={() => handleUpdateStatus('REQUIRES_REVIEW')}
-                  className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded font-medium transition-colors"
+                  className="flex items-center justify-center gap-1.5 px-3.5 py-2 min-h-[38px] bg-amber-600 hover:bg-amber-700 text-white rounded font-medium transition-colors text-xs shadow-2xs"
                 >
-                  <AlertTriangle className="w-3.5 h-3.5" />
+                  <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
                   <span>Flag For Review</span>
                 </button>
                 <button
                   onClick={() => handleUpdateStatus('REJECTED')}
-                  className="flex items-center gap-1.5 px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded font-medium transition-colors"
+                  className="flex items-center justify-center gap-1.5 px-3.5 py-2 min-h-[38px] bg-rose-600 hover:bg-rose-700 text-white rounded font-medium transition-colors text-xs shadow-2xs"
                 >
-                  <XCircle className="w-3.5 h-3.5" />
+                  <XCircle className="w-3.5 h-3.5 shrink-0" />
                   <span>Reject Record</span>
                 </button>
               </div>

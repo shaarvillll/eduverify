@@ -11,6 +11,7 @@ import {
   ChevronRight,
   ShieldCheck,
   CheckCircle,
+  X,
 } from 'lucide-react';
 import { useApp, NavTab } from '../../context/AppContext';
 
@@ -66,7 +67,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <div className="flex items-center justify-center w-9 h-9 rounded-md bg-blue-600 text-white shrink-0 shadow-xs">
               <ShieldCheck className="w-5 h-5" />
             </div>
-            {!isCollapsed && (
+            {(!isCollapsed || mobileOpen) && (
               <div className="flex flex-col min-w-0">
                 <span className="text-base font-bold tracking-tight text-white truncate">
                   EduVerify
@@ -85,6 +86,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
             aria-label={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           >
             {isCollapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
+          </button>
+          {/* Mobile Close Button */}
+          <button
+            onClick={() => setMobileOpen(false)}
+            className="lg:hidden flex items-center justify-center p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-md transition-colors min-w-[36px] min-h-[36px]"
+            aria-label="Close navigation menu"
+          >
+            <X className="w-5 h-5" />
           </button>
         </div>
 
@@ -113,7 +122,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <button
                 key={item.id}
                 onClick={() => handleSelectTab(item.id)}
-                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-colors text-left ${
+                className={`w-full flex items-center gap-3 px-3 py-2.5 min-h-[44px] rounded-md text-sm font-medium transition-colors text-left ${
                   isActive
                     ? 'bg-blue-600 text-white shadow-xs font-semibold'
                     : 'text-slate-300 hover:text-white hover:bg-slate-800/80'

@@ -283,7 +283,39 @@ export const OverviewPage: React.FC = () => {
             </button>
           </div>
 
-          <div className="overflow-x-auto">
+          {/* Mobile Card View (< 640px) */}
+          <div className="sm:hidden divide-y divide-slate-100">
+            {recentStudents.map((student) => (
+              <div key={student.id} className="p-3.5 space-y-2">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <div className="font-semibold text-slate-900 text-xs">{student.fullName}</div>
+                    <div className="text-[11px] text-slate-400 font-mono">{student.id}</div>
+                  </div>
+                  <StatusBadge status={student.validationStatus} />
+                </div>
+                <div className="text-[11px] text-slate-600 bg-slate-50 p-2 rounded">
+                  <div className="truncate text-slate-800 font-medium">{student.institutionName}</div>
+                  <div className="flex items-center justify-between text-slate-500 mt-1">
+                    <span className="font-mono text-slate-700">••••-••••-{student.apaarTestId.slice(-4)}</span>
+                    <span className="truncate ml-2">{student.programmeName}</span>
+                  </div>
+                </div>
+                <button
+                  onClick={() => {
+                    setSelectedStudent(student);
+                    setActiveTab('students');
+                  }}
+                  className="w-full py-1.5 px-2.5 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded transition-colors text-center min-h-[36px] flex items-center justify-center"
+                >
+                  View Details & Dossier
+                </button>
+              </div>
+            ))}
+          </div>
+
+          {/* Desktop Table (>= 640px) */}
+          <div className="hidden sm:block overflow-x-auto">
             <table className="w-full text-left text-xs">
               <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-semibold uppercase tracking-wider">
                 <tr>
