@@ -13,6 +13,8 @@ import {
   Filter,
   RefreshCw,
   AlertTriangle,
+  Loader2,
+  AlertCircle,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { IssueType, ValidationIssue } from '../../types';
@@ -55,6 +57,22 @@ export const ValidationIssuesPage: React.FC = () => {
       setScanMessage({ type: 'error', text: `Scan failed: ${msg}. Please verify that the backend server and PostgreSQL are connected.` });
     } finally {
       setIsScanning(false);
+    }
+  };
+
+  const [resolvingIssueId, setResolvingIssueId] = useState<string | null>(null);
+  const [issueActionError, setIssueActionError] = useState<{ issueId: string; message: string } | null>(null);
+
+  const handleResolveIssue = async (issueId: string, resolution: 'RESOLVED' | 'DISMISSED' | 'OPEN') => {
+    setResolvingIssueId(issueId);
+    setIssueActionError(null);
+    try {
+      await resolveIssue(issueId, resolution);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed to update issue status';
+      setIssueActionError({ issueId, message: msg });
+    } finally {
+      setResolvingIssueId(null);
     }
   };
 
@@ -301,25 +319,32 @@ export const ValidationIssuesPage: React.FC = () => {
                       issue.status === 'OPEN' ? (
                         <>
                           <button
-                            onClick={() => resolveIssue(issue.id, 'RESOLVED')}
-                            className="flex items-center justify-center gap-1 px-3 py-2 min-h-[34px] text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded transition-colors shadow-2xs flex-1 sm:flex-initial"
+                            onClick={() => handleResolveIssue(issue.id, 'RESOLVED')}
+                            disabled={resolvingIssueId === issue.id}
+                            className="flex items-center justify-center gap-1 px-3 py-2 min-h-[34px] text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed rounded transition-colors shadow-2xs flex-1 sm:flex-initial"
                           >
-                            <CheckCircle className="w-3.5 h-3.5" />
+                            {resolvingIssueId === issue.id ? (
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            ) : (
+                              <CheckCircle className="w-3.5 h-3.5" />
+                            )}
                             <span>Mark Resolved</span>
                           </button>
                           <button
-                            onClick={() => resolveIssue(issue.id, 'DISMISSED')}
-                            className="flex items-center justify-center gap-1 px-2.5 py-2 min-h-[34px] text-xs font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded border border-slate-200 transition-colors flex-1 sm:flex-initial"
+                            onClick={() => handleResolveIssue(issue.id, 'DISMISSED')}
+                            disabled={resolvingIssueId === issue.id}
+                            className="flex items-center justify-center gap-1 px-2.5 py-2 min-h-[34px] text-xs font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-100 disabled:opacity-50 disabled:cursor-not-allowed rounded border border-slate-200 transition-colors flex-1 sm:flex-initial"
                           >
                             <span>Dismiss</span>
                           </button>
                         </>
                       ) : (
                         <button
-                          onClick={() => resolveIssue(issue.id, 'OPEN')}
-                          className="flex items-center justify-center gap-1 px-3 py-2 min-h-[34px] text-xs font-medium text-blue-700 hover:bg-blue-50 rounded border border-blue-200 transition-colors flex-1 sm:flex-initial"
+                          onClick={() => handleResolveIssue(issue.id, 'OPEN')}
+                          disabled={resolvingIssueId === issue.id}
+                          className="flex items-center justify-center gap-1 px-3 py-2 min-h-[34px] text-xs font-medium text-blue-700 hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed rounded border border-blue-200 transition-colors flex-1 sm:flex-initial"
                         >
-                          <RotateCcw className="w-3.5 h-3.5" />
+                          <RotateCcw className={`w-3.5 h-3.5 ${resolvingIssueId === issue.id ? 'animate-spin' : ''}`} />
                           <span>Re-open Issue</span>
                         </button>
                       )
@@ -334,6 +359,21 @@ export const ValidationIssuesPage: React.FC = () => {
                       <ArrowRight className="w-3.5 h-3.5" />
                     </button>
                   </div>
+
+                  {issueActionError && issueActionError.issueId === issue.id && (
+                    <div className="w-full mt-2 p-2 bg-rose-50 border border-rose-200 rounded text-xs text-rose-800 flex items-start justify-between gap-1.5">
+                      <div className="flex items-center gap-1.5 font-medium">
+                        <AlertCircle className="w-3.5 h-3.5 text-rose-600 shrink-0" />
+                        <span>{issueActionError.message}</span>
+                      </div>
+                      <button
+                        onClick={() => setIssueActionError(null)}
+                        className="text-rose-600 hover:text-rose-800 font-bold px-1"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>

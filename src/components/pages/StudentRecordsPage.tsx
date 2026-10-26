@@ -21,6 +21,8 @@ import {
   Download,
   Lock,
   Info,
+  AlertCircle,
+  Shield,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { StudentRecord, ValidationStatus, StudentDocument, DocumentMismatchFinding } from '../../types';
@@ -74,6 +76,27 @@ export const StudentRecordsPage: React.FC = () => {
   const [documentFindings, setDocumentFindings] = useState<Record<string, DocumentMismatchFinding[]>>({});
   const [isComparingDocId, setIsComparingDocId] = useState<string | null>(null);
   const [comparisonMessage, setComparisonMessage] = useState<{ docId: string; type: 'success' | 'error'; text: string } | null>(null);
+
+  // Finding action state
+  const [updatingFindingId, setUpdatingFindingId] = useState<string | null>(null);
+  const [findingActionError, setFindingActionError] = useState<{ findingId: string; message: string } | null>(null);
+  const [findingActionSuccess, setFindingActionSuccess] = useState<{ findingId: string; message: string } | null>(null);
+
+  // Status mutation state
+  const [isUpdatingStatus, setIsUpdatingStatus] = useState<boolean>(false);
+  const [statusUpdateError, setStatusUpdateError] = useState<string | null>(null);
+  const [statusUpdateSuccess, setStatusUpdateSuccess] = useState<string | null>(null);
+
+  // Synchronize modal remarks and reset error states when selectedStudent changes
+  useEffect(() => {
+    if (selectedStudent) {
+      setAdminNote(selectedStudent.discrepancyNote || '');
+      setStatusUpdateError(null);
+      setStatusUpdateSuccess(null);
+      setFindingActionError(null);
+      setFindingActionSuccess(null);
+    }
+  }, [selectedStudent?.id]);
 
   // Fetch documents whenever a student is selected
   useEffect(() => {
@@ -287,6 +310,18 @@ export const StudentRecordsPage: React.FC = () => {
     newStatus: 'OPEN' | 'RESOLVED' | 'DISMISSED',
     docId: string
   ) => {
+    if (currentUser?.role === 'INSTITUTION_MEMBER') {
+      setFindingActionError({
+        findingId,
+        message: 'Institution members cannot resolve or dismiss regulatory discrepancy findings. Only AICTE Regulatory Reviewers can record regulatory determinations.',
+      });
+      return;
+    }
+
+    setUpdatingFindingId(findingId);
+    setFindingActionError(null);
+    setFindingActionSuccess(null);
+
     try {
       const response = await fetchWithAuth(`${API_BASE_URL}/api/findings/${findingId}/status`, {
         method: 'PATCH',
@@ -302,16 +337,28 @@ export const StudentRecordsPage: React.FC = () => {
       const { finding } = await response.json();
 
       setDocumentFindings((prev) => {
-        const currentList = prev[docId] || [];
-        return {
-          ...prev,
-          [docId]: currentList.map((f) =>
+        const next = { ...prev };
+        for (const [key, list] of Object.entries(next)) {
+          next[key] = list.map((f) =>
             f.id === findingId ? { ...f, status: finding.status, updatedAt: finding.updatedAt } : f
-          ),
-        };
+          );
+        }
+        return next;
       });
+
+      setFindingActionSuccess({
+        findingId,
+        message: `Discrepancy marked as ${newStatus}. Updated in PostgreSQL.`,
+      });
+
+      setTimeout(() => {
+        setFindingActionSuccess((prev) => (prev?.findingId === findingId ? null : prev));
+      }, 4000);
     } catch (err: unknown) {
-      console.error('Failed to update finding status:', err);
+      const msg = err instanceof Error ? err.message : 'Failed to update finding status';
+      setFindingActionError({ findingId, message: msg });
+    } finally {
+      setUpdatingFindingId(null);
     }
   };
 
@@ -385,7 +432,11 @@ export const StudentRecordsPage: React.FC = () => {
       }
 
       // Status filter
-      if (selectedStatusFilter !== 'ALL' && student.validationStatus !== selectedStatusFilter) {
+      if (selectedStatusFilter === 'AWAITING_REVIEW') {
+        if (student.validationStatus !== 'REQUIRES_REVIEW' && student.validationStatus !== 'PENDING') {
+          return false;
+        }
+      } else if (selectedStatusFilter !== 'ALL' && student.validationStatus !== selectedStatusFilter) {
         return false;
       }
 
@@ -403,12 +454,43 @@ export const StudentRecordsPage: React.FC = () => {
   const handleOpenStudent = (student: StudentRecord) => {
     setSelectedStudent(student);
     setAdminNote(student.discrepancyNote || '');
+    setStatusUpdateError(null);
+    setStatusUpdateSuccess(null);
+    setFindingActionError(null);
+    setFindingActionSuccess(null);
     setShowModalApaar(false);
   };
 
-  const handleUpdateStatus = (newStatus: ValidationStatus) => {
-    if (selectedStudent) {
-      updateStudentStatus(selectedStudent.id, newStatus, adminNote);
+  const handleUpdateStatus = async (newStatus: ValidationStatus) => {
+    if (!selectedStudent || isUpdatingStatus) return;
+
+    if (newStatus === 'REJECTED' && !adminNote.trim()) {
+      setStatusUpdateError('Please enter a rejection reason or audit remarks before rejecting the record.');
+      return;
+    }
+
+    setIsUpdatingStatus(true);
+    setStatusUpdateError(null);
+    setStatusUpdateSuccess(null);
+
+    try {
+      await updateStudentStatus(selectedStudent.id, newStatus, adminNote.trim() || undefined);
+      const actionName =
+        newStatus === 'VALIDATED'
+          ? 'Approved & Validated'
+          : newStatus === 'REJECTED'
+          ? 'Rejected'
+          : newStatus === 'REQUIRES_REVIEW' && currentUser?.role === 'INSTITUTION_MEMBER'
+          ? 'Submitted for Regulatory Review'
+          : 'Flagged for Review';
+
+      setStatusUpdateSuccess(`Status successfully updated to ${newStatus} (${actionName}). Recorded in audit trail.`);
+      setTimeout(() => setStatusUpdateSuccess(null), 5000);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed to update student validation status';
+      setStatusUpdateError(msg);
+    } finally {
+      setIsUpdatingStatus(false);
     }
   };
 
@@ -525,7 +607,10 @@ export const StudentRecordsPage: React.FC = () => {
               }}
               className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded text-slate-800 text-xs focus:bg-white focus:outline-hidden focus:ring-1 focus:ring-blue-500"
             >
-              <option value="ALL">All Statuses</option>
+              <option value="ALL">All Statuses ({students.length})</option>
+              <option value="AWAITING_REVIEW">
+                Awaiting Review Queue ({students.filter((s) => s.validationStatus === 'REQUIRES_REVIEW' || s.validationStatus === 'PENDING').length})
+              </option>
               <option value="VALIDATED">Validated</option>
               <option value="REQUIRES_REVIEW">Requires Review</option>
               <option value="REJECTED">Rejected</option>
@@ -534,6 +619,30 @@ export const StudentRecordsPage: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Regulatory Reviewer Review Queue Banner */}
+      {currentUser?.role === 'REGULATORY_REVIEWER' && (
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 bg-blue-50 border border-blue-200 rounded-lg text-xs text-blue-900 shadow-2xs">
+          <div className="flex items-center gap-2">
+            <ShieldCheck className="w-4 h-4 text-blue-600 shrink-0" />
+            <span>
+              <strong>Regulatory Review Queue:</strong>{' '}
+              {students.filter((s) => s.validationStatus === 'REQUIRES_REVIEW' || s.validationStatus === 'PENDING').length} record{students.filter((s) => s.validationStatus === 'REQUIRES_REVIEW' || s.validationStatus === 'PENDING').length !== 1 ? 's' : ''} awaiting review determination. Click on any student to inspect documents, evaluate discrepancy findings, and record validation determinations.
+            </span>
+          </div>
+          {selectedStatusFilter !== 'AWAITING_REVIEW' && (
+            <button
+              onClick={() => {
+                setSelectedStatusFilter('AWAITING_REVIEW');
+                setCurrentPage(1);
+              }}
+              className="px-3 py-1.5 text-xs font-semibold bg-blue-600 hover:bg-blue-700 text-white rounded transition-colors shrink-0 shadow-2xs"
+            >
+              Filter Awaiting Review
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Main Students Data Table */}
       <div className="bg-white border border-slate-200 rounded-lg shadow-2xs overflow-hidden">
@@ -1173,35 +1282,77 @@ export const StudentRecordsPage: React.FC = () => {
                                           </div>
 
                                           <div className="flex items-center gap-1.5 self-end sm:self-auto">
-                                            {finding.status === 'OPEN' ? (
-                                              <>
+                                            {currentUser?.role === 'REGULATORY_REVIEWER' ? (
+                                              finding.status === 'OPEN' ? (
+                                                <>
+                                                  <button
+                                                    onClick={() => handleUpdateFindingStatus(finding.id, 'RESOLVED', doc.id)}
+                                                    disabled={updatingFindingId === finding.id}
+                                                    className="flex items-center gap-1 px-2.5 py-1 min-h-[28px] text-[10px] font-medium rounded bg-white text-emerald-700 border border-emerald-300 hover:bg-emerald-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-2xs"
+                                                    title="Mark finding as resolved"
+                                                  >
+                                                    {updatingFindingId === finding.id ? (
+                                                      <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                                                    ) : (
+                                                      <CheckCircle className="w-2.5 h-2.5" />
+                                                    )}
+                                                    <span>Resolve</span>
+                                                  </button>
+                                                  <button
+                                                    onClick={() => handleUpdateFindingStatus(finding.id, 'DISMISSED', doc.id)}
+                                                    disabled={updatingFindingId === finding.id}
+                                                    className="flex items-center gap-1 px-2.5 py-1 min-h-[28px] text-[10px] font-medium rounded bg-white text-slate-600 border border-slate-300 hover:bg-slate-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-2xs"
+                                                    title="Dismiss finding as harmless"
+                                                  >
+                                                    <span>Dismiss</span>
+                                                  </button>
+                                                </>
+                                              ) : (
                                                 <button
-                                                  onClick={() => handleUpdateFindingStatus(finding.id, 'RESOLVED', doc.id)}
-                                                  className="px-2.5 py-1 min-h-[28px] text-[10px] font-medium rounded bg-white text-emerald-700 border border-emerald-300 hover:bg-emerald-50 transition-colors shadow-2xs"
-                                                  title="Mark finding as resolved"
+                                                  onClick={() => handleUpdateFindingStatus(finding.id, 'OPEN', doc.id)}
+                                                  disabled={updatingFindingId === finding.id}
+                                                  className="flex items-center gap-1 px-2.5 py-1 min-h-[28px] text-[10px] font-medium rounded bg-white text-blue-700 border border-blue-300 hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-2xs"
+                                                  title="Reopen finding for review"
                                                 >
-                                                  Resolve
+                                                  <RotateCcw className={`w-2.5 h-2.5 ${updatingFindingId === finding.id ? 'animate-spin' : ''}`} />
+                                                  <span>Re-open</span>
                                                 </button>
-                                                <button
-                                                  onClick={() => handleUpdateFindingStatus(finding.id, 'DISMISSED', doc.id)}
-                                                  className="px-2.5 py-1 min-h-[28px] text-[10px] font-medium rounded bg-white text-slate-600 border border-slate-300 hover:bg-slate-100 transition-colors shadow-2xs"
-                                                  title="Dismiss finding as harmless"
-                                                >
-                                                  Dismiss
-                                                </button>
-                                              </>
+                                              )
+                                            ) : currentUser?.role === 'INSTITUTION_MEMBER' ? (
+                                              <div className="flex items-center gap-1 text-[10px] text-slate-500 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
+                                                <Shield className="w-3 h-3 text-slate-400" />
+                                                <span>Reviewer Determination Required</span>
+                                              </div>
                                             ) : (
-                                              <button
-                                                onClick={() => handleUpdateFindingStatus(finding.id, 'OPEN', doc.id)}
-                                                className="flex items-center gap-1 px-2.5 py-1 min-h-[28px] text-[10px] font-medium rounded bg-white text-blue-700 border border-blue-300 hover:bg-blue-50 transition-colors shadow-2xs"
-                                                title="Reopen finding for review"
-                                              >
-                                                <RotateCcw className="w-2.5 h-2.5" />
-                                                <span>Re-open</span>
-                                              </button>
+                                              <div className="text-[10px] text-slate-400 italic">
+                                                Administrative view only
+                                              </div>
                                             )}
                                           </div>
                                         </div>
+
+                                        {/* Finding Action Error / Success Notices */}
+                                        {findingActionError && findingActionError.findingId === finding.id && (
+                                          <div className="p-2 bg-rose-50 border border-rose-200 rounded text-[10px] text-rose-800 flex items-start justify-between gap-1.5">
+                                            <div className="flex items-center gap-1.5 font-medium">
+                                              <AlertCircle className="w-3.5 h-3.5 text-rose-600 shrink-0" />
+                                              <span>{findingActionError.message}</span>
+                                            </div>
+                                            <button
+                                              onClick={() => setFindingActionError(null)}
+                                              className="text-rose-600 hover:text-rose-800 font-bold px-1"
+                                            >
+                                              ×
+                                            </button>
+                                          </div>
+                                        )}
+
+                                        {findingActionSuccess && findingActionSuccess.findingId === finding.id && (
+                                          <div className="p-1.5 bg-emerald-50 border border-emerald-200 rounded text-[10px] text-emerald-800 flex items-center gap-1.5 font-medium">
+                                            <CheckCircle className="w-3 h-3 text-emerald-600 shrink-0" />
+                                            <span>{findingActionSuccess.message}</span>
+                                          </div>
+                                        )}
 
                                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[10px] bg-white p-2 rounded border border-slate-200">
                                           <div>
@@ -1271,6 +1422,29 @@ export const StudentRecordsPage: React.FC = () => {
                 />
               </div>
 
+              {/* Status Update Feedback Notices */}
+              {statusUpdateError && (
+                <div className="p-2.5 bg-rose-50 border border-rose-200 rounded text-xs text-rose-800 flex items-start justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                    <span className="font-medium">{statusUpdateError}</span>
+                  </div>
+                  <button
+                    onClick={() => setStatusUpdateError(null)}
+                    className="text-rose-600 hover:text-rose-800 font-bold px-1"
+                  >
+                    ×
+                  </button>
+                </div>
+              )}
+
+              {statusUpdateSuccess && (
+                <div className="p-2.5 bg-emerald-50 border border-emerald-200 rounded text-xs text-emerald-800 flex items-center gap-2 font-medium">
+                  <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>{statusUpdateSuccess}</span>
+                </div>
+              )}
+
               {/* Action Buttons to mutate status */}
               <div className="pt-3 flex flex-col sm:flex-row items-stretch sm:items-center justify-end gap-2 border-t border-slate-100">
                 {currentUser?.role === 'INSTITUTION_MEMBER' ? (
@@ -1280,33 +1454,53 @@ export const StudentRecordsPage: React.FC = () => {
                     </div>
                     <button
                       onClick={() => handleUpdateStatus('REQUIRES_REVIEW')}
-                      className="flex items-center justify-center gap-1.5 px-3.5 py-2 min-h-[38px] bg-blue-600 hover:bg-blue-700 text-white rounded font-medium transition-colors text-xs shadow-2xs shrink-0"
+                      disabled={isUpdatingStatus}
+                      className="flex items-center justify-center gap-1.5 px-3.5 py-2 min-h-[38px] bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded font-medium transition-colors text-xs shadow-2xs shrink-0"
                     >
-                      <Upload className="w-3.5 h-3.5 shrink-0" />
-                      <span>Submit for Review</span>
+                      {isUpdatingStatus ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+                      ) : (
+                        <Upload className="w-3.5 h-3.5 shrink-0" />
+                      )}
+                      <span>{isUpdatingStatus ? 'Submitting…' : 'Submit for Review'}</span>
                     </button>
                   </div>
                 ) : currentUser?.role === 'REGULATORY_REVIEWER' ? (
                   <>
                     <button
                       onClick={() => handleUpdateStatus('VALIDATED')}
-                      className="flex items-center justify-center gap-1.5 px-3.5 py-2 min-h-[38px] bg-emerald-600 hover:bg-emerald-700 text-white rounded font-medium transition-colors text-xs shadow-2xs"
+                      disabled={isUpdatingStatus}
+                      className="flex items-center justify-center gap-1.5 px-3.5 py-2 min-h-[38px] bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded font-medium transition-colors text-xs shadow-2xs"
                     >
-                      <CheckCircle className="w-3.5 h-3.5 shrink-0" />
+                      {isUpdatingStatus ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+                      ) : (
+                        <CheckCircle className="w-3.5 h-3.5 shrink-0" />
+                      )}
                       <span>Approve & Validate</span>
                     </button>
                     <button
                       onClick={() => handleUpdateStatus('REQUIRES_REVIEW')}
-                      className="flex items-center justify-center gap-1.5 px-3.5 py-2 min-h-[38px] bg-amber-600 hover:bg-amber-700 text-white rounded font-medium transition-colors text-xs shadow-2xs"
+                      disabled={isUpdatingStatus}
+                      className="flex items-center justify-center gap-1.5 px-3.5 py-2 min-h-[38px] bg-amber-600 hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded font-medium transition-colors text-xs shadow-2xs"
                     >
-                      <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                      {isUpdatingStatus ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+                      ) : (
+                        <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                      )}
                       <span>Flag For Review</span>
                     </button>
                     <button
                       onClick={() => handleUpdateStatus('REJECTED')}
-                      className="flex items-center justify-center gap-1.5 px-3.5 py-2 min-h-[38px] bg-rose-600 hover:bg-rose-700 text-white rounded font-medium transition-colors text-xs shadow-2xs"
+                      disabled={isUpdatingStatus}
+                      className="flex items-center justify-center gap-1.5 px-3.5 py-2 min-h-[38px] bg-rose-600 hover:bg-rose-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded font-medium transition-colors text-xs shadow-2xs"
                     >
-                      <XCircle className="w-3.5 h-3.5 shrink-0" />
+                      {isUpdatingStatus ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+                      ) : (
+                        <XCircle className="w-3.5 h-3.5 shrink-0" />
+                      )}
                       <span>Reject Record</span>
                     </button>
                   </>

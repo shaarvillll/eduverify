@@ -80,6 +80,7 @@ async function runTests() {
     const testDocIds = [];
     const testStorageKeys = [];
     const testUserIds = [];
+    const testFindingIds = [];
 
     try {
         // ==========================================
@@ -571,6 +572,128 @@ async function runTests() {
         });
 
         // ==========================================
+        // SECTION 7B: DOCUMENT MISMATCH FINDINGS RESOLUTION & PRIVILEGE SEPARATION
+        // ==========================================
+        const testFindingId1 = `FIND-TEST-${Date.now()}-1`;
+        const testFindingId2 = `FIND-TEST-${Date.now()}-2`;
+        testFindingIds.push(testFindingId1, testFindingId2);
+
+        await testPool.query(
+            `INSERT INTO document_mismatch_findings (
+                id, document_id, student_id, field_name, field_label,
+                document_value, database_value, raw_evidence,
+                finding_type, severity, explanation, status,
+                created_at, updated_at
+            ) VALUES
+            ($1, $2, 'DEMO-STU-001', 'semester', 'Enrolled Semester', '2', '3', 'Semester 2', 'SEMESTER_MISMATCH', 'WARNING', 'Test discrepancy 1', 'OPEN', NOW(), NOW()),
+            ($3, $2, 'DEMO-STU-001', 'academicYear', 'Academic Year', '2026-2027', '2024-2025', 'Academic Year 2026', 'ACADEMIC_YEAR_MISMATCH', 'WARNING', 'Test discrepancy 2', 'OPEN', NOW(), NOW())`,
+            [testFindingId1, testDocId, testFindingId2]
+        );
+
+        await test("Institution Member cannot resolve or dismiss document discrepancy findings (returns 403 Forbidden)", async () => {
+            const res = await fetch(`${BASE_URL}/api/findings/${testFindingId1}/status`, {
+                method: "PATCH",
+                headers: inst1.headers,
+                body: JSON.stringify({ status: "RESOLVED" }),
+            });
+            assert.strictEqual(res.status, 403);
+            const data = await res.json();
+            assert.ok(data.message.includes("Institution members cannot resolve or dismiss regulatory discrepancy findings"));
+
+            // Verify in DB that status is still OPEN
+            const check = await testPool.query("SELECT status FROM document_mismatch_findings WHERE id = $1", [testFindingId1]);
+            assert.strictEqual(check.rows[0].status, "OPEN");
+        });
+
+        await test("System Administrator cannot resolve or dismiss document discrepancy findings (returns 403 Forbidden)", async () => {
+            const res = await fetch(`${BASE_URL}/api/findings/${testFindingId1}/status`, {
+                method: "PATCH",
+                headers: admin.headers,
+                body: JSON.stringify({ status: "RESOLVED" }),
+            });
+            assert.strictEqual(res.status, 403);
+
+            // Verify in DB that status is still OPEN
+            const check = await testPool.query("SELECT status FROM document_mismatch_findings WHERE id = $1", [testFindingId1]);
+            assert.strictEqual(check.rows[0].status, "OPEN");
+        });
+
+        await test("Regulatory Reviewer can resolve and dismiss document discrepancy findings with audit trail and DB persistence", async () => {
+            // 1. Resolve finding
+            const resResolve = await fetch(`${BASE_URL}/api/findings/${testFindingId1}/status`, {
+                method: "PATCH",
+                headers: reviewer.headers,
+                body: JSON.stringify({ status: "RESOLVED" }),
+            });
+            assert.strictEqual(resResolve.status, 200);
+            const dataResolve = await resResolve.json();
+            assert.strictEqual(dataResolve.finding.status, "RESOLVED");
+
+            // Verify PostgreSQL update
+            const checkResolve = await testPool.query("SELECT status FROM document_mismatch_findings WHERE id = $1", [testFindingId1]);
+            assert.strictEqual(checkResolve.rows[0].status, "RESOLVED");
+
+            // Verify audit trail
+            const auditCheck = await testPool.query(
+                "SELECT action, user_email FROM audit_logs WHERE resource_id = $1 AND action = 'FINDING_STATUS_UPDATED' ORDER BY created_at DESC LIMIT 1",
+                [testFindingId1]
+            );
+            assert.ok(auditCheck.rowCount > 0, "Audit trail must record FINDING_STATUS_UPDATED");
+
+            // 2. Dismiss finding
+            const resDismiss = await fetch(`${BASE_URL}/api/findings/${testFindingId1}/status`, {
+                method: "PATCH",
+                headers: reviewer.headers,
+                body: JSON.stringify({ status: "DISMISSED" }),
+            });
+            assert.strictEqual(resDismiss.status, 200);
+            const dataDismiss = await resDismiss.json();
+            assert.strictEqual(dataDismiss.finding.status, "DISMISSED");
+
+            const checkDismiss = await testPool.query("SELECT status FROM document_mismatch_findings WHERE id = $1", [testFindingId1]);
+            assert.strictEqual(checkDismiss.rows[0].status, "DISMISSED");
+        });
+
+        await test("Resolving one document discrepancy finding does NOT modify other findings or student records", async () => {
+            // Verify finding 2 is still OPEN
+            const checkF2 = await testPool.query("SELECT status FROM document_mismatch_findings WHERE id = $1", [testFindingId2]);
+            assert.strictEqual(checkF2.rows[0].status, "OPEN", "Finding 2 must remain unchanged");
+
+            // Verify student record DEMO-STU-001 was not mutated by finding resolution
+            const checkStu = await testPool.query("SELECT id, institution_id FROM students WHERE id = 'DEMO-STU-001'");
+            assert.strictEqual(checkStu.rows[0].id, "DEMO-STU-001");
+            assert.strictEqual(checkStu.rows[0].institution_id, "DEMO-INST-001");
+        });
+
+        await test("Regulatory Reviewer can reject (REJECTED) and flag (REQUIRES_REVIEW) student records", async () => {
+            // Test REJECTED
+            const resReject = await fetch(`${BASE_URL}/api/students/DEMO-STU-001/status`, {
+                method: "PATCH",
+                headers: reviewer.headers,
+                body: JSON.stringify({
+                    validationStatus: "REJECTED",
+                    discrepancyNote: "Certificate signature could not be verified against nodal registry",
+                }),
+            });
+            assert.strictEqual(resReject.status, 200);
+            const dataReject = await resReject.json();
+            assert.strictEqual(dataReject.student.validationStatus, "REJECTED");
+
+            // Test REQUIRES_REVIEW
+            const resFlag = await fetch(`${BASE_URL}/api/students/DEMO-STU-001/status`, {
+                method: "PATCH",
+                headers: reviewer.headers,
+                body: JSON.stringify({
+                    validationStatus: "REQUIRES_REVIEW",
+                    discrepancyNote: "Pending applicant response on semester registration discrepancy",
+                }),
+            });
+            assert.strictEqual(resFlag.status, 200);
+            const dataFlag = await resFlag.json();
+            assert.strictEqual(dataFlag.student.validationStatus, "REQUIRES_REVIEW");
+        });
+
+        // ==========================================
         // SECTION 8: SYSTEM ADMINISTRATOR ENDPOINTS & PRIVILEGE SEPARATION
         // ==========================================
         await test("Non-admin roles receive 403 Forbidden when accessing /api/admin/* endpoints", async () => {
@@ -780,6 +903,10 @@ async function runTests() {
         });
 
         // Cleanups
+        if (testFindingIds.length > 0) {
+            await testPool.query("DELETE FROM document_mismatch_findings WHERE id = ANY($1)", [testFindingIds]);
+        }
+
         if (testDocIds.length > 0) {
             await testPool.query("DELETE FROM student_documents WHERE id = ANY($1)", [testDocIds]);
             const fs = require("fs");
