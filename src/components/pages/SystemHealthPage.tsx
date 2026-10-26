@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { SystemHealthMetrics } from '../../types';
+import { API_BASE_URL } from '../../config';
 
 export const SystemHealthPage: React.FC = () => {
   const { fetchWithAuth } = useApp();
@@ -20,8 +21,6 @@ export const SystemHealthPage: React.FC = () => {
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [lastRefreshed, setLastRefreshed] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
-
-  const API_BASE_URL = (import.meta.env.VITE_API_URL || 'http://localhost:5001').replace(/\/+$/, '');
 
   const loadHealthMetrics = async () => {
     setIsLoading(true);

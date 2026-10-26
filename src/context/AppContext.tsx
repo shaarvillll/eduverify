@@ -14,6 +14,7 @@ import {
   INITIAL_VALIDATION_ISSUES,
   INITIAL_NOTIFICATIONS,
 } from '../data/syntheticData';
+import { API_BASE_URL } from '../config';
 
 export type NavTab =
   | 'overview'
@@ -115,8 +116,6 @@ interface AppContextType {
     reportedIntakeSeats: number;
   };
 }
-
-const API_BASE_URL = (import.meta.env.VITE_API_URL || 'http://localhost:5001').replace(/\/+$/, '');
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 

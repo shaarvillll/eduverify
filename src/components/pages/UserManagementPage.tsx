@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { AuthUser, UserRole } from '../../types';
+import { API_BASE_URL } from '../../config';
 
 export const UserManagementPage: React.FC = () => {
   const { fetchWithAuth, currentUser } = useApp();
@@ -33,8 +34,6 @@ export const UserManagementPage: React.FC = () => {
   const [newInstitutionId, setNewInstitutionId] = useState<string>('DEMO-INST-001');
   const [newCanViewDocs, setNewCanViewDocs] = useState<boolean>(false);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
-
-  const API_BASE_URL = (import.meta.env.VITE_API_URL || 'http://localhost:5001').replace(/\/+$/, '');
 
   const loadUsers = async () => {
     setIsLoading(true);

@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { AuditLogEntry } from '../../types';
+import { API_BASE_URL } from '../../config';
 
 export const AuditLogsPage: React.FC = () => {
   const { fetchWithAuth } = useApp();
@@ -22,8 +23,6 @@ export const AuditLogsPage: React.FC = () => {
   const [roleFilter, setRoleFilter] = useState<string>('ALL');
   const [search, setSearch] = useState<string>('');
   const [expandedLogId, setExpandedLogId] = useState<string | null>(null);
-
-  const API_BASE_URL = (import.meta.env.VITE_API_URL || 'http://localhost:5001').replace(/\/+$/, '');
 
   const loadAuditLogs = async () => {
     setIsLoading(true);

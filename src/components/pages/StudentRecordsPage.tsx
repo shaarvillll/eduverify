@@ -28,8 +28,7 @@ import { StatusBadge } from '../common/StatusBadge';
 import { Modal } from '../common/Modal';
 import { ErrorBoundary } from '../common/ErrorBoundary';
 import { SyntheticBanner } from '../common/SyntheticBanner';
-
-const API_BASE_URL = (import.meta.env.VITE_API_URL || 'http://localhost:5001').replace(/\/+$/, '');
+import { API_BASE_URL } from '../../config';
 
 export const StudentRecordsPage: React.FC = () => {
   const {
