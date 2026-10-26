@@ -18,6 +18,8 @@ import {
   Upload,
   Loader2,
   RotateCcw,
+  Download,
+  Lock,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { StudentRecord, ValidationStatus, StudentDocument, DocumentMismatchFinding } from '../../types';
@@ -37,6 +39,8 @@ export const StudentRecordsPage: React.FC = () => {
     selectedStudent,
     setSelectedStudent,
     updateStudentStatus,
+    currentUser,
+    fetchWithAuth,
   } = useApp();
 
   // Filters
@@ -81,7 +85,7 @@ export const StudentRecordsPage: React.FC = () => {
       setComparisonMessage(null);
       if (fileInputRef.current) fileInputRef.current.value = '';
 
-      fetch(`${API_BASE_URL}/api/students/${selectedStudent.id}/documents`)
+      fetchWithAuth(`${API_BASE_URL}/api/students/${selectedStudent.id}/documents`)
         .then((res) => (res.ok ? res.json() : []))
         .then((docs: StudentDocument[]) => {
           setStudentDocuments(docs);
@@ -95,7 +99,7 @@ export const StudentRecordsPage: React.FC = () => {
         });
 
       // Phase 2C: Fetch existing document mismatch findings for selected student
-      fetch(`${API_BASE_URL}/api/students/${selectedStudent.id}/document-findings`)
+      fetchWithAuth(`${API_BASE_URL}/api/students/${selectedStudent.id}/document-findings`)
         .then((res) => (res.ok ? res.json() : []))
         .then((findings: DocumentMismatchFinding[]) => {
           const grouped: Record<string, DocumentMismatchFinding[]> = {};
@@ -148,6 +152,27 @@ export const StudentRecordsPage: React.FC = () => {
     setSelectedUploadFile(file);
   };
 
+  const handleDownloadDocument = async (doc: StudentDocument) => {
+    try {
+      const res = await fetchWithAuth(`${API_BASE_URL}/api/documents/${doc.id}/file`);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.message || `Download failed (HTTP ${res.status})`);
+      }
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = doc.originalFilename;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+    } catch (err: any) {
+      alert(err.message || 'Error downloading document');
+    }
+  };
+
   const handleUploadDocument = async () => {
     if (!selectedStudent || !selectedUploadFile || isUploadingDoc) return;
 
@@ -159,7 +184,7 @@ export const StudentRecordsPage: React.FC = () => {
       const formData = new FormData();
       formData.append('document', selectedUploadFile);
 
-      const response = await fetch(`${API_BASE_URL}/api/students/${selectedStudent.id}/documents`, {
+      const response = await fetchWithAuth(`${API_BASE_URL}/api/students/${selectedStudent.id}/documents`, {
         method: 'POST',
         body: formData,
       });
@@ -190,7 +215,7 @@ export const StudentRecordsPage: React.FC = () => {
     setOcrError(null);
 
     try {
-      const response = await fetch(`${API_BASE_URL}/api/documents/${docId}/extract`, {
+      const response = await fetchWithAuth(`${API_BASE_URL}/api/documents/${docId}/extract`, {
         method: 'POST',
       });
 
@@ -224,7 +249,7 @@ export const StudentRecordsPage: React.FC = () => {
     setComparisonMessage(null);
 
     try {
-      const response = await fetch(`${API_BASE_URL}/api/documents/${docId}/compare`, {
+      const response = await fetchWithAuth(`${API_BASE_URL}/api/documents/${docId}/compare`, {
         method: 'POST',
       });
 
@@ -263,7 +288,7 @@ export const StudentRecordsPage: React.FC = () => {
     docId: string
   ) => {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/findings/${findingId}/status`, {
+      const response = await fetchWithAuth(`${API_BASE_URL}/api/findings/${findingId}/status`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: newStatus }),
@@ -809,6 +834,15 @@ export const StudentRecordsPage: React.FC = () => {
                   {studentDocuments.length} document{studentDocuments.length !== 1 ? 's' : ''}
                 </span>
               </div>
+
+              {currentUser?.role === 'REGULATORY_REVIEWER' && !currentUser?.canViewDocuments && (
+                <div className="p-3 bg-amber-50 border border-amber-200 rounded text-xs text-amber-800 flex items-center gap-2">
+                  <Lock className="w-4 h-4 text-amber-600 shrink-0" />
+                  <span>
+                    <strong>Sensitive Document Inspection Clearance Required:</strong> Viewing raw certificate files requires explicit regulatory clearance. To view or download, contact your System Administrator.
+                  </span>
+                </div>
+              )}
               <p className="text-xs text-slate-500">
                 Securely store synthetic student dossier files (PDF, PNG, JPEG, max 10 MB). Stored in isolated backend storage for regulatory audits.
               </p>
@@ -965,6 +999,20 @@ export const StudentRecordsPage: React.FC = () => {
                                 <span className="px-1.5 py-0.5 text-[10px] font-medium rounded bg-amber-50 text-amber-700 border border-amber-200 uppercase">
                                   {doc.reviewStatus}
                                 </span>
+
+                                <button
+                                  onClick={() => handleDownloadDocument(doc)}
+                                  disabled={currentUser?.role === 'REGULATORY_REVIEWER' && !currentUser?.canViewDocuments}
+                                  className="flex items-center gap-1 px-2.5 py-1 min-h-[28px] text-[10px] font-semibold rounded border bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                                  title={
+                                    currentUser?.role === 'REGULATORY_REVIEWER' && !currentUser?.canViewDocuments
+                                      ? 'Document inspection clearance required'
+                                      : 'Download and inspect raw document file'
+                                  }
+                                >
+                                  <Download className="w-3 h-3" />
+                                  <span>Download</span>
+                                </button>
                                 {(doc.processingStatus === 'UPLOADED' || doc.processingStatus === 'FAILED') && (
                                   <button
                                     onClick={() => handleExtractText(doc.id)}
@@ -1216,27 +1264,48 @@ export const StudentRecordsPage: React.FC = () => {
 
               {/* Action Buttons to mutate status */}
               <div className="pt-3 flex flex-col sm:flex-row items-stretch sm:items-center justify-end gap-2 border-t border-slate-100">
-                <button
-                  onClick={() => handleUpdateStatus('VALIDATED')}
-                  className="flex items-center justify-center gap-1.5 px-3.5 py-2 min-h-[38px] bg-emerald-600 hover:bg-emerald-700 text-white rounded font-medium transition-colors text-xs shadow-2xs"
-                >
-                  <CheckCircle className="w-3.5 h-3.5 shrink-0" />
-                  <span>Approve & Validate</span>
-                </button>
-                <button
-                  onClick={() => handleUpdateStatus('REQUIRES_REVIEW')}
-                  className="flex items-center justify-center gap-1.5 px-3.5 py-2 min-h-[38px] bg-amber-600 hover:bg-amber-700 text-white rounded font-medium transition-colors text-xs shadow-2xs"
-                >
-                  <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-                  <span>Flag For Review</span>
-                </button>
-                <button
-                  onClick={() => handleUpdateStatus('REJECTED')}
-                  className="flex items-center justify-center gap-1.5 px-3.5 py-2 min-h-[38px] bg-rose-600 hover:bg-rose-700 text-white rounded font-medium transition-colors text-xs shadow-2xs"
-                >
-                  <XCircle className="w-3.5 h-3.5 shrink-0" />
-                  <span>Reject Record</span>
-                </button>
+                {currentUser?.role === 'INSTITUTION_MEMBER' ? (
+                  <div className="w-full flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="text-[11px] text-slate-500">
+                      <span className="font-semibold text-slate-700">Institution Member:</span> You may correct details or submit for review. Regulatory verification is recorded by AICTE Reviewers.
+                    </div>
+                    <button
+                      onClick={() => handleUpdateStatus('REQUIRES_REVIEW')}
+                      className="flex items-center justify-center gap-1.5 px-3.5 py-2 min-h-[38px] bg-blue-600 hover:bg-blue-700 text-white rounded font-medium transition-colors text-xs shadow-2xs shrink-0"
+                    >
+                      <Upload className="w-3.5 h-3.5 shrink-0" />
+                      <span>Submit for Review</span>
+                    </button>
+                  </div>
+                ) : currentUser?.role === 'REGULATORY_REVIEWER' ? (
+                  <>
+                    <button
+                      onClick={() => handleUpdateStatus('VALIDATED')}
+                      className="flex items-center justify-center gap-1.5 px-3.5 py-2 min-h-[38px] bg-emerald-600 hover:bg-emerald-700 text-white rounded font-medium transition-colors text-xs shadow-2xs"
+                    >
+                      <CheckCircle className="w-3.5 h-3.5 shrink-0" />
+                      <span>Approve & Validate</span>
+                    </button>
+                    <button
+                      onClick={() => handleUpdateStatus('REQUIRES_REVIEW')}
+                      className="flex items-center justify-center gap-1.5 px-3.5 py-2 min-h-[38px] bg-amber-600 hover:bg-amber-700 text-white rounded font-medium transition-colors text-xs shadow-2xs"
+                    >
+                      <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                      <span>Flag For Review</span>
+                    </button>
+                    <button
+                      onClick={() => handleUpdateStatus('REJECTED')}
+                      className="flex items-center justify-center gap-1.5 px-3.5 py-2 min-h-[38px] bg-rose-600 hover:bg-rose-700 text-white rounded font-medium transition-colors text-xs shadow-2xs"
+                    >
+                      <XCircle className="w-3.5 h-3.5 shrink-0" />
+                      <span>Reject Record</span>
+                    </button>
+                  </>
+                ) : (
+                  <div className="text-xs text-slate-500 italic">
+                    System Administrator session: Administrative oversight mode. Regulatory determinations are recorded by Reviewers.
+                  </div>
+                )}
               </div>
             </div>
           </div>

@@ -77,13 +77,13 @@ export const InstitutionsPage: React.FC = () => {
           let totalReported = 0;
           let hasOverIntake = false;
 
-          inst.programmes.forEach((p) => {
-            totalApproved += p.approvedIntake;
-            totalReported += p.reportedEnrolment;
+          inst.programmes?.forEach((p) => {
+            totalApproved += p.approvedIntake || 0;
+            totalReported += p.reportedEnrolment || 0;
             if (p.intakeStatus === 'OVER_INTAKE') hasOverIntake = true;
           });
 
-          const utilizationPct = Math.round((totalReported / totalApproved) * 100);
+          const utilizationPct = totalApproved > 0 ? Math.round((totalReported / totalApproved) * 100) : 0;
 
           return (
             <div
@@ -164,7 +164,7 @@ export const InstitutionsPage: React.FC = () => {
                       Departmental Intake Allocation & Verification Roster
                     </h4>
                     <span className="text-[11px] text-slate-500">
-                      {inst.programmes.length} approved degree programmes
+                      {(inst.programmes || []).length} approved degree programmes
                     </span>
                   </div>
 
@@ -181,7 +181,7 @@ export const InstitutionsPage: React.FC = () => {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100">
-                        {inst.programmes.map((prog) => {
+                        {(inst.programmes || []).map((prog) => {
                           const pct = Math.round((prog.reportedEnrolment / prog.approvedIntake) * 100);
                           const isOver = prog.intakeStatus === 'OVER_INTAKE';
                           const isVacant = prog.intakeStatus === 'VACANCY_WARNING';

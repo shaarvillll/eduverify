@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { AppProvider, useApp } from './context/AppContext';
 import { Sidebar } from './components/layout/Sidebar';
 import { TopNav } from './components/layout/TopNav';
+import { LoginPage } from './components/pages/LoginPage';
 import { OverviewPage } from './components/pages/OverviewPage';
 import { StudentRecordsPage } from './components/pages/StudentRecordsPage';
 import { DataUploadPage } from './components/pages/DataUploadPage';
@@ -9,11 +10,29 @@ import { ValidationIssuesPage } from './components/pages/ValidationIssuesPage';
 import { InstitutionsPage } from './components/pages/InstitutionsPage';
 import { ReportsPage } from './components/pages/ReportsPage';
 import { SettingsPage } from './components/pages/SettingsPage';
+import { SystemHealthPage } from './components/pages/SystemHealthPage';
+import { UserManagementPage } from './components/pages/UserManagementPage';
+import { AuditLogsPage } from './components/pages/AuditLogsPage';
 
 const AppContent: React.FC = () => {
-  const { activeTab } = useApp();
+  const { activeTab, currentUser, isLoadingAuth } = useApp();
   const [isCollapsed, setIsCollapsed] = useState<boolean>(false);
   const [mobileOpen, setMobileOpen] = useState<boolean>(false);
+
+  if (isLoadingAuth) {
+    return (
+      <div className="flex items-center justify-center h-screen w-screen bg-slate-50 font-sans">
+        <div className="flex flex-col items-center gap-3">
+          <div className="w-8 h-8 border-3 border-blue-600/20 border-t-blue-600 rounded-full animate-spin" />
+          <p className="text-xs text-slate-500 font-medium">Validating EduVerify session...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!currentUser) {
+    return <LoginPage />;
+  }
 
   const renderActiveView = () => {
     switch (activeTab) {
@@ -31,6 +50,12 @@ const AppContent: React.FC = () => {
         return <ReportsPage />;
       case 'settings':
         return <SettingsPage />;
+      case 'system-health':
+        return <SystemHealthPage />;
+      case 'users':
+        return <UserManagementPage />;
+      case 'audit-logs':
+        return <AuditLogsPage />;
       default:
         return <OverviewPage />;
     }
@@ -66,7 +91,7 @@ const AppContent: React.FC = () => {
                 <span>AICTE-Approved Institutional Student Registry Prototype</span>
               </div>
               <div className="text-[11px] text-slate-500">
-                100% Synthetic Fictional Data · Designed for AICTE Technical Administration
+                Logged in as <strong className="text-slate-700">{currentUser?.email || 'Authenticated User'}</strong> ({currentUser?.role?.replace('_', ' ') || 'Role'}) · 100% Synthetic Fictional Data
               </div>
             </div>
           </footer>

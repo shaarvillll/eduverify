@@ -32,9 +32,9 @@ export const OverviewPage: React.FC = () => {
   const enrolmentChartData = institutions.map((inst) => {
     let approved = 0;
     let reported = 0;
-    inst.programmes.forEach((p) => {
-      approved += p.approvedIntake;
-      reported += p.reportedEnrolment;
+    inst.programmes?.forEach((p) => {
+      approved += p.approvedIntake || 0;
+      reported += p.reportedEnrolment || 0;
     });
     return {
       name: inst.city,

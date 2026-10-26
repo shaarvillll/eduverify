@@ -135,3 +135,67 @@ export interface DocumentMismatchFinding {
   createdAt: string;
   updatedAt: string;
 }
+
+// Authentication & Role-Based Access Control Types
+export type UserRole = 'INSTITUTION_MEMBER' | 'REGULATORY_REVIEWER' | 'SYSTEM_ADMIN';
+
+export interface AuthUser {
+  id: string;
+  email: string;
+  fullName: string;
+  role: UserRole;
+  institutionId: string | null;
+  institutionName: string | null;
+  canViewDocuments: boolean;
+  lastLoginAt?: string;
+  isActive?: boolean;
+}
+
+export interface AuditLogEntry {
+  id: string;
+  userId: string | null;
+  userEmail: string;
+  role: string;
+  action: string;
+  resourceType: string;
+  resourceId?: string | null;
+  institutionId?: string | null;
+  details?: Record<string, any>;
+  ipAddress?: string | null;
+  createdAt: string;
+}
+
+export interface SystemHealthMetrics {
+  status: string;
+  uptimeSeconds: number;
+  timestamp: string;
+  nodeVersion: string;
+  platform: string;
+  memory: {
+    rss: number;
+    heapTotal: number;
+    heapUsed: number;
+    external?: number;
+  };
+  database: {
+    connected: boolean;
+    totalConnections: number;
+    idleConnections: number;
+    waitingClients: number;
+  };
+  recordCounts: {
+    users: number;
+    auditLogs: number;
+    institutions: number;
+    students: number;
+    studentDocuments: number;
+    validationIssues: number;
+    documentMismatchFindings: number;
+  };
+  storage: {
+    isolatedDir: boolean;
+    filesOnDisk: number;
+    totalSizeBytes: number;
+  };
+}
+

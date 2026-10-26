@@ -11,10 +11,22 @@ const multer = require("multer");
 const { Pool } = require("pg");
 const { PDFParse } = require("pdf-parse");
 const Tesseract = require("tesseract.js");
+const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
+const helmet = require("helmet");
+const rateLimit = require("express-rate-limit");
 
 const app = express();
 const PORT = parseInt(process.env.PORT || "5001", 10);
 const CORS_ORIGIN = process.env.CORS_ORIGIN || "http://localhost:3000";
+const JWT_SECRET = process.env.JWT_SECRET || "eduverify-proto-jwt-secret-key-2025-production-ready";
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "24h";
+
+// Apply helmet security headers (disabling strict CSP that interferes with embedded SPA widgets)
+app.use(helmet({
+    contentSecurityPolicy: false,
+    crossOriginEmbedderPolicy: false,
+}));
 
 // Configure isolated storage directory for student documents (outside any public web root)
 const UPLOAD_DIR = process.env.UPLOAD_DIR
@@ -174,11 +186,148 @@ app.use(
 );
 app.use(express.json({ limit: "10mb" }));
 
+// Rate limiters for security
+const authLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 30, // 30 login requests per 15 min per IP
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { message: "Too many login attempts from this network. Please try again after 15 minutes." },
+});
+
+const apiLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 500, // 500 requests per 15 min per IP
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { message: "Too many requests from this network. Please try again after 15 minutes." },
+});
+app.use("/api/", apiLimiter);
+
+/**
+ * Generate signed JWT token containing user identity and role
+ */
+function generateToken(user) {
+    return jwt.sign(
+        {
+            id: user.id,
+            email: user.email,
+            role: user.role,
+            institutionId: user.institution_id || null,
+        },
+        JWT_SECRET,
+        { expiresIn: JWT_EXPIRES_IN }
+    );
+}
+
+/**
+ * Record an audit event into PostgreSQL audit_logs table
+ */
+async function recordAuditLog(clientOrPool, {
+    userId = null,
+    userEmail = "anonymous",
+    role = "ANONYMOUS",
+    action,
+    resourceType,
+    resourceId = null,
+    institutionId = null,
+    details = {},
+    ipAddress = null,
+}) {
+    try {
+        const logId = `AUDIT-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
+        await clientOrPool.query(
+            `INSERT INTO audit_logs (
+                id, user_id, user_email, role, action, resource_type,
+                resource_id, institution_id, details, ip_address, created_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())`,
+            [
+                logId,
+                userId,
+                userEmail,
+                role,
+                action,
+                resourceType,
+                resourceId,
+                institutionId,
+                JSON.stringify(details),
+                ipAddress,
+            ]
+        );
+    } catch (err) {
+        console.error("Audit logging error:", err.message);
+    }
+}
+
+/**
+ * Middleware: Verify Bearer JWT and populate req.user from active database record
+ */
+async function authenticateToken(req, res, next) {
+    const authHeader = req.headers["authorization"] || req.headers["x-access-token"];
+    const token = authHeader && (authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : authHeader);
+
+    if (!token) {
+        return res.status(401).json({ message: "Authentication required: Missing access token" });
+    }
+
+    try {
+        const decoded = jwt.verify(token, JWT_SECRET);
+        const userRes = await pool.query(
+            `SELECT id, email, role, institution_id, full_name, is_active, can_view_documents 
+             FROM users 
+             WHERE id = $1`,
+            [decoded.id]
+        );
+
+        if (userRes.rows.length === 0) {
+            return res.status(401).json({ message: "Authentication failed: User account does not exist" });
+        }
+
+        const user = userRes.rows[0];
+        if (!user.is_active) {
+            return res.status(403).json({ message: "Account has been deactivated. Please contact your system administrator." });
+        }
+
+        req.user = {
+            id: user.id,
+            email: user.email,
+            role: user.role,
+            institutionId: user.institution_id || null,
+            fullName: user.full_name,
+            canViewDocuments: Boolean(user.can_view_documents),
+        };
+        next();
+    } catch (err) {
+        if (err.name === "TokenExpiredError") {
+            return res.status(401).json({ message: "Session expired: Please log in again" });
+        }
+        return res.status(401).json({ message: "Invalid or malformed authentication token" });
+    }
+}
+
+/**
+ * Middleware: Restrict access to specified roles
+ */
+function requireRole(...allowedRoles) {
+    return (req, res, next) => {
+        if (!req.user) {
+            return res.status(401).json({ message: "Authentication required" });
+        }
+        if (!allowedRoles.includes(req.user.role)) {
+            return res.status(403).json({
+                message: `Access forbidden: Role '${req.user.role}' is not authorized for this resource`,
+            });
+        }
+        next();
+    };
+}
+
 // Root health check endpoint
 app.get("/", (req, res) => {
     res.send("EduVerify Backend is running!");
 });
 
+// Public health check endpoint: Reveals basic status but NO database credentials, internal hosts, or operational secrets
 app.get("/api/health", async (req, res) => {
     try {
         await pool.query("SELECT 1");
@@ -188,19 +337,252 @@ app.get("/api/health", async (req, res) => {
             database: "connected",
         });
     } catch (err) {
-        res.status(500).json({
+        // Safe, non-disclosing 503 response
+        res.status(503).json({
             status: "error",
-            message: "Database connection failed",
-            error: err.message,
+            message: "Database service unavailable",
         });
     }
 });
 
-// GET /api/students - Return all students from PostgreSQL ordered by ID
-app.get("/api/students", async (req, res) => {
+// --- AUTHENTICATION ROUTES ---
+
+// POST /api/auth/login - Authenticate with email and password
+app.post("/api/auth/login", authLimiter, async (req, res) => {
+    const { email, password } = req.body || {};
+    const ipAddress = req.ip || req.headers["x-forwarded-for"] || req.socket.remoteAddress;
+
+    if (!email || !password || typeof email !== "string" || typeof password !== "string") {
+        return res.status(400).json({ message: "Email and password are required" });
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+
     try {
-        const result = await pool.query(`
-            SELECT
+        const userRes = await pool.query(
+            `SELECT u.id, u.email, u.password_hash, u.role, u.institution_id, u.full_name, u.is_active, u.can_view_documents,
+                    i.name AS "institutionName"
+             FROM users u
+             LEFT JOIN institutions i ON u.institution_id = i.id
+             WHERE LOWER(u.email) = $1`,
+            [cleanEmail]
+        );
+
+        if (userRes.rows.length === 0) {
+            await recordAuditLog(pool, {
+                userEmail: cleanEmail,
+                action: "LOGIN_FAILED",
+                resourceType: "AUTH",
+                details: { reason: "User not found" },
+                ipAddress,
+            });
+            // Generic error message to prevent account enumeration
+            return res.status(401).json({ message: "Invalid email or password" });
+        }
+
+        const user = userRes.rows[0];
+
+        if (!user.is_active) {
+            await recordAuditLog(pool, {
+                userId: user.id,
+                userEmail: user.email,
+                role: user.role,
+                action: "LOGIN_BLOCKED_INACTIVE",
+                resourceType: "AUTH",
+                institutionId: user.institution_id,
+                ipAddress,
+            });
+            return res.status(403).json({
+                message: "This account has been deactivated. Please contact your system administrator.",
+            });
+        }
+
+        const isMatch = await bcrypt.compare(password, user.password_hash);
+        if (!isMatch) {
+            await recordAuditLog(pool, {
+                userId: user.id,
+                userEmail: user.email,
+                role: user.role,
+                action: "LOGIN_FAILED",
+                resourceType: "AUTH",
+                institutionId: user.institution_id,
+                details: { reason: "Incorrect password" },
+                ipAddress,
+            });
+            // Generic error message to prevent account enumeration
+            return res.status(401).json({ message: "Invalid email or password" });
+        }
+
+        // Update last login timestamp
+        await pool.query("UPDATE users SET last_login_at = NOW() WHERE id = $1", [user.id]);
+
+        const token = generateToken(user);
+
+        await recordAuditLog(pool, {
+            userId: user.id,
+            userEmail: user.email,
+            role: user.role,
+            action: "LOGIN_SUCCESS",
+            resourceType: "AUTH",
+            institutionId: user.institution_id,
+            ipAddress,
+        });
+
+        res.json({
+            message: "Authentication successful",
+            token,
+            user: {
+                id: user.id,
+                email: user.email,
+                fullName: user.full_name,
+                role: user.role,
+                institutionId: user.institution_id || null,
+                institutionName: user.institutionName || null,
+                canViewDocuments: Boolean(user.can_view_documents),
+            },
+        });
+    } catch (err) {
+        console.error("Login route error:", err);
+        res.status(500).json({ message: "Internal authentication error" });
+    }
+});
+
+// GET /api/auth/me - Retrieve profile of currently authenticated user
+app.get("/api/auth/me", authenticateToken, async (req, res) => {
+    try {
+        const userRes = await pool.query(
+            `SELECT u.id, u.email, u.role, u.institution_id AS "institutionId", u.full_name AS "fullName",
+                    u.can_view_documents AS "canViewDocuments", u.last_login_at AS "lastLoginAt",
+                    i.name AS "institutionName", i.aicte_code AS "aicteCode", i.city, i.state
+             FROM users u
+             LEFT JOIN institutions i ON u.institution_id = i.id
+             WHERE u.id = $1`,
+            [req.user.id]
+        );
+
+        if (userRes.rows.length === 0) {
+            return res.status(404).json({ message: "User not found" });
+        }
+
+        res.json(userRes.rows[0]);
+    } catch (err) {
+        console.error("Auth me error:", err);
+        res.status(500).json({ message: "Failed to retrieve user profile" });
+    }
+});
+
+// POST /api/auth/logout - Record logout audit event and acknowledge termination
+app.post("/api/auth/logout", authenticateToken, async (req, res) => {
+    const ipAddress = req.ip || req.headers["x-forwarded-for"] || req.socket.remoteAddress;
+    await recordAuditLog(pool, {
+        userId: req.user.id,
+        userEmail: req.user.email,
+        role: req.user.role,
+        action: "LOGOUT",
+        resourceType: "AUTH",
+        institutionId: req.user.institutionId,
+        ipAddress,
+    });
+    res.json({ status: "ok", message: "Successfully logged out" });
+});
+
+// GET /api/students - Return students with institution isolation and role scoping
+app.get("/api/students", authenticateToken, async (req, res) => {
+    try {
+        let query;
+        let params = [];
+
+        if (req.user.role === "INSTITUTION_MEMBER") {
+            // Strictly isolated to own institution
+            query = `
+                SELECT
+                    id,
+                    apaar_test_id AS "apaarTestId",
+                    full_name AS "fullName",
+                    gender,
+                    dob,
+                    category,
+                    institution_id AS "institutionId",
+                    institution_name AS "institutionName",
+                    programme_id AS "programmeId",
+                    programme_name AS "programmeName",
+                    academic_year AS "academicYear",
+                    semester,
+                    admission_quota AS "admissionQuota",
+                    validation_status AS "validationStatus",
+                    discrepancy_note AS "discrepancyNote",
+                    last_updated AS "lastUpdated"
+                FROM students
+                WHERE institution_id = $1
+                ORDER BY id
+            `;
+            params = [req.user.institutionId];
+        } else {
+            // Regulatory Reviewer or System Admin
+            const filterInst = req.query.institutionId ? String(req.query.institutionId).trim() : null;
+            if (filterInst) {
+                query = `
+                    SELECT
+                        id,
+                        apaar_test_id AS "apaarTestId",
+                        full_name AS "fullName",
+                        gender,
+                        dob,
+                        category,
+                        institution_id AS "institutionId",
+                        institution_name AS "institutionName",
+                        programme_id AS "programmeId",
+                        programme_name AS "programmeName",
+                        academic_year AS "academicYear",
+                        semester,
+                        admission_quota AS "admissionQuota",
+                        validation_status AS "validationStatus",
+                        discrepancy_note AS "discrepancyNote",
+                        last_updated AS "lastUpdated"
+                    FROM students
+                    WHERE institution_id = $1
+                    ORDER BY id
+                `;
+                params = [filterInst];
+            } else {
+                query = `
+                    SELECT
+                        id,
+                        apaar_test_id AS "apaarTestId",
+                        full_name AS "fullName",
+                        gender,
+                        dob,
+                        category,
+                        institution_id AS "institutionId",
+                        institution_name AS "institutionName",
+                        programme_id AS "programmeId",
+                        programme_name AS "programmeName",
+                        academic_year AS "academicYear",
+                        semester,
+                        admission_quota AS "admissionQuota",
+                        validation_status AS "validationStatus",
+                        discrepancy_note AS "discrepancyNote",
+                        last_updated AS "lastUpdated"
+                    FROM students
+                    ORDER BY id
+                `;
+            }
+        }
+
+        const result = await pool.query(query, params);
+        res.json(result.rows);
+    } catch (error) {
+        console.error("Error fetching students:", error);
+        res.status(500).json({ message: "Could not fetch students" });
+    }
+});
+
+// GET /api/students/:id - Return a single student record with authorization check
+app.get("/api/students/:id", authenticateToken, async (req, res) => {
+    const { id } = req.params;
+    try {
+        const result = await pool.query(
+            `SELECT
                 id,
                 apaar_test_id AS "apaarTestId",
                 full_name AS "fullName",
@@ -217,21 +599,35 @@ app.get("/api/students", async (req, res) => {
                 validation_status AS "validationStatus",
                 discrepancy_note AS "discrepancyNote",
                 last_updated AS "lastUpdated"
-            FROM students
-            ORDER BY id
-        `);
+             FROM students
+             WHERE id = $1`,
+            [id]
+        );
 
-        res.json(result.rows);
+        if (result.rowCount === 0) {
+            return res.status(404).json({ message: `Student with ID '${id}' not found` });
+        }
+
+        const student = result.rows[0];
+
+        // Enforce institution isolation
+        if (req.user.role === "INSTITUTION_MEMBER" && student.institutionId !== req.user.institutionId) {
+            // Return non-disclosing 404
+            return res.status(404).json({ message: `Student with ID '${id}' not found` });
+        }
+
+        res.json(student);
     } catch (error) {
-        console.error("Error fetching students:", error);
-        res.status(500).json({ message: "Could not fetch students", error: error.message });
+        console.error("Error fetching student details:", error);
+        res.status(500).json({ message: "Could not fetch student details" });
     }
 });
 
-// PATCH /api/students/:id/status - Update validation status and note
-app.patch("/api/students/:id/status", async (req, res) => {
+// PATCH /api/students/:id/status - Update validation status with role-separated approval workflow
+app.patch("/api/students/:id/status", authenticateToken, async (req, res) => {
     const { id } = req.params;
     const { validationStatus, discrepancyNote } = req.body;
+    const ipAddress = req.ip || req.headers["x-forwarded-for"] || req.socket.remoteAddress;
 
     const allowedStatuses = [
         "VALIDATED",
@@ -247,13 +643,50 @@ app.patch("/api/students/:id/status", async (req, res) => {
     }
 
     try {
+        // 1. Fetch current student record
+        const checkRes = await pool.query(
+            `SELECT id, full_name AS "fullName", institution_id AS "institutionId", validation_status AS "validationStatus", discrepancy_note AS "discrepancyNote"
+             FROM students WHERE id = $1`,
+            [id]
+        );
+
+        if (checkRes.rowCount === 0) {
+            return res.status(404).json({ message: `Student with ID '${id}' not found` });
+        }
+
+        const currentStudent = checkRes.rows[0];
+
+        // 2. Authorization check
+        if (req.user.role === "INSTITUTION_MEMBER") {
+            // Must belong to user's institution
+            if (currentStudent.institutionId !== req.user.institutionId) {
+                return res.status(404).json({ message: `Student with ID '${id}' not found` });
+            }
+            // Cannot grant final regulatory validation or rejection
+            if (validationStatus === "VALIDATED" || validationStatus === "REJECTED") {
+                return res.status(403).json({
+                    message: "Access forbidden: Institution members cannot grant final regulatory validation or rejection. You may submit records for regulatory review.",
+                });
+            }
+        } else if (req.user.role === "SYSTEM_ADMIN") {
+            // System administrators manage system operations and do not make regulatory verification determinations
+            return res.status(403).json({
+                message: "Access forbidden: System administrators manage system operations and do not record regulatory validation determinations.",
+            });
+        }
+        // REGULATORY_REVIEWER is permitted to decide VALIDATED, REJECTED, REQUIRES_REVIEW, PENDING
+
+        // 3. Format audit note for regulatory decisions
+        let formattedNote = discrepancyNote !== undefined ? discrepancyNote : currentStudent.discrepancyNote;
+        if (req.user.role === "REGULATORY_REVIEWER") {
+            const auditTag = `[Regulatory Review by ${req.user.fullName} (${req.user.email}) on ${new Date().toISOString().split("T")[0]}]`;
+            formattedNote = discrepancyNote ? `${auditTag}: ${discrepancyNote}` : `${auditTag}: Marked as ${validationStatus}`;
+        }
+
         const result = await pool.query(
             `UPDATE students
              SET validation_status = $1,
-                 discrepancy_note = CASE
-                     WHEN $2::text IS NOT NULL THEN $2
-                     ELSE discrepancy_note
-                 END,
+                 discrepancy_note = $2,
                  last_updated = NOW()
              WHERE id = $3
              RETURNING
@@ -273,14 +706,29 @@ app.patch("/api/students/:id/status", async (req, res) => {
                 validation_status AS "validationStatus",
                 discrepancy_note AS "discrepancyNote",
                 last_updated AS "lastUpdated"`,
-            [validationStatus, discrepancyNote !== undefined ? discrepancyNote : null, id]
+            [validationStatus, formattedNote, id]
         );
 
-        if (result.rowCount === 0) {
-            return res.status(404).json({
-                message: `Student with ID '${id}' not found`,
-            });
-        }
+        // Record audit event
+        const auditAction = req.user.role === "REGULATORY_REVIEWER"
+            ? "REGULATORY_DECISION_RECORDED"
+            : "STUDENT_RECORD_SUBMITTED";
+
+        await recordAuditLog(pool, {
+            userId: req.user.id,
+            userEmail: req.user.email,
+            role: req.user.role,
+            action: auditAction,
+            resourceType: "STUDENT",
+            resourceId: id,
+            institutionId: currentStudent.institutionId,
+            details: {
+                previousStatus: currentStudent.validationStatus,
+                newStatus: validationStatus,
+                note: formattedNote,
+            },
+            ipAddress,
+        });
 
         res.json({
             message: "Student status updated",
@@ -288,15 +736,19 @@ app.patch("/api/students/:id/status", async (req, res) => {
         });
     } catch (error) {
         console.error("Error updating student:", error);
-        res.status(500).json({
-            message: "Could not update student status",
-            error: error.message,
-        });
+        res.status(500).json({ message: "Could not update student status" });
     }
 });
 
 // POST /api/students/batch - Batch import student records
-app.post("/api/students/batch", async (req, res) => {
+app.post("/api/students/batch", authenticateToken, async (req, res) => {
+    const ipAddress = req.ip || req.headers["x-forwarded-for"] || req.socket.remoteAddress;
+
+    if (req.user.role === "REGULATORY_REVIEWER") {
+        return res.status(403).json({
+            message: "Access forbidden: Regulatory Reviewers cannot ingest student records. Only Institution Members or Administrators can upload student records.",
+        });
+    }
     const rawList = Array.isArray(req.body)
         ? req.body
         : Array.isArray(req.body?.students)
@@ -340,6 +792,15 @@ app.post("/api/students/batch", async (req, res) => {
             return res.status(400).json({
                 message: `Validation error at record ${i + 1} (${id}): Invalid status '${status}'`,
             });
+        }
+
+        if (req.user.role === "INSTITUTION_MEMBER") {
+            const itemInst = s.institutionId || s.institution_id;
+            if (itemInst && itemInst !== req.user.institutionId) {
+                return res.status(403).json({
+                    message: `Access forbidden: Cannot upload records for another institution ('${itemInst}'). Your account is restricted to '${req.user.institutionId}'.`,
+                });
+            }
         }
     }
 
@@ -412,6 +873,12 @@ app.post("/api/students/batch", async (req, res) => {
 
         const insertedStudents = [];
 
+        let memberInstName = null;
+        if (req.user.role === "INSTITUTION_MEMBER") {
+            const instCheck = await pool.query("SELECT name FROM institutions WHERE id = $1", [req.user.institutionId]);
+            if (instCheck.rowCount > 0) memberInstName = instCheck.rows[0].name;
+        }
+
         for (const s of toInsert) {
             const studentId = String(s.id).trim();
             const apaarId = (s.apaarTestId || s.apaar_test_id) ? String(s.apaarTestId || s.apaar_test_id).trim() : null;
@@ -419,14 +886,27 @@ app.post("/api/students/batch", async (req, res) => {
             const gender = s.gender ? String(s.gender).trim() : null;
             const dob = s.dob ? String(s.dob).trim() : null;
             const category = s.category ? String(s.category).trim() : null;
-            const institutionId = (s.institutionId || s.institution_id) ? String(s.institutionId || s.institution_id).trim() : null;
-            const institutionName = (s.institutionName || s.institution_name) ? String(s.institutionName || s.institution_name).trim() : null;
+            
+            let institutionId;
+            let institutionName;
+            if (req.user.role === "INSTITUTION_MEMBER") {
+                institutionId = req.user.institutionId;
+                institutionName = memberInstName || s.institutionName || s.institution_name || null;
+            } else {
+                institutionId = (s.institutionId || s.institution_id) ? String(s.institutionId || s.institution_id).trim() : null;
+                institutionName = (s.institutionName || s.institution_name) ? String(s.institutionName || s.institution_name).trim() : null;
+            }
+
             const programmeId = (s.programmeId || s.programme_id) ? String(s.programmeId || s.programme_id).trim() : null;
             const programmeName = (s.programmeName || s.programme_name) ? String(s.programmeName || s.programme_name).trim() : null;
             const academicYear = (s.academicYear || s.academic_year) ? String(s.academicYear || s.academic_year).trim() : null;
             const semester = (s.semester !== undefined && s.semester !== null && s.semester !== "") ? parseInt(s.semester, 10) : null;
             const admissionQuota = (s.admissionQuota || s.admission_quota) ? String(s.admissionQuota || s.admission_quota).trim() : null;
-            const validationStatus = s.validationStatus || s.validation_status || "PENDING";
+            
+            let validationStatus = s.validationStatus || s.validation_status || "PENDING";
+            if (req.user.role === "INSTITUTION_MEMBER" && validationStatus === "VALIDATED") {
+                validationStatus = "PENDING";
+            }
             const discrepancyNote = (s.discrepancyNote || s.discrepancy_note || "").trim();
 
             const insertRes = await client.query(
@@ -477,6 +957,20 @@ app.post("/api/students/batch", async (req, res) => {
 
         await client.query("COMMIT");
 
+        await recordAuditLog(pool, {
+            userId: req.user.id,
+            userEmail: req.user.email,
+            role: req.user.role,
+            action: "STUDENT_BATCH_INGESTED",
+            resourceType: "STUDENT_BATCH",
+            institutionId: req.user.institutionId || null,
+            details: {
+                insertedCount: insertedStudents.length,
+                studentIds: insertedStudents.map((st) => st.id),
+            },
+            ipAddress,
+        });
+
         // Trigger automated rule-based verification scan after new records are inserted
         try {
             await runVerificationEngine(pool);
@@ -508,8 +1002,10 @@ app.post("/api/students/batch", async (req, res) => {
 // ==========================================
 
 // POST /api/students/:studentId/documents - Secure upload of synthetic student document
-app.post("/api/students/:studentId/documents", handleUploadMiddleware, async (req, res) => {
+app.post("/api/students/:studentId/documents", authenticateToken, handleUploadMiddleware, async (req, res) => {
     const studentId = req.params.studentId ? String(req.params.studentId).trim() : "";
+    const ipAddress = req.ip || req.headers["x-forwarded-for"] || req.socket.remoteAddress;
+
     if (!studentId) {
         return res.status(400).json({ message: "Missing student ID parameter" });
     }
@@ -517,13 +1013,26 @@ app.post("/api/students/:studentId/documents", handleUploadMiddleware, async (re
     try {
         // 1. Verify that the referenced student exists in PostgreSQL
         const studentCheck = await pool.query(
-            "SELECT id, full_name AS \"fullName\" FROM students WHERE id = $1",
+            "SELECT id, full_name AS \"fullName\", institution_id AS \"institutionId\" FROM students WHERE id = $1",
             [studentId]
         );
 
         if (studentCheck.rowCount === 0) {
             return res.status(404).json({
                 message: `Student with ID '${studentId}' not found`,
+            });
+        }
+
+        const student = studentCheck.rows[0];
+
+        // Authorization: Institution Members can only upload documents for their own institution
+        if (req.user.role === "INSTITUTION_MEMBER") {
+            if (student.institutionId !== req.user.institutionId) {
+                return res.status(404).json({ message: `Student with ID '${studentId}' not found` });
+            }
+        } else {
+            return res.status(403).json({
+                message: "Access forbidden: Only Institution Members can upload student verification documents.",
             });
         }
 
@@ -726,7 +1235,7 @@ async function extractDocumentText(filePath, mimeType, fileExtension) {
 }
 
 // GET /api/students/:studentId/documents - List documents for an existing student
-app.get("/api/students/:studentId/documents", async (req, res) => {
+app.get("/api/students/:studentId/documents", authenticateToken, async (req, res) => {
     const studentId = req.params.studentId ? String(req.params.studentId).trim() : "";
     if (!studentId) {
         return res.status(400).json({ message: "Missing student ID parameter" });
@@ -734,12 +1243,24 @@ app.get("/api/students/:studentId/documents", async (req, res) => {
 
     try {
         const studentCheck = await pool.query(
-            "SELECT id FROM students WHERE id = $1",
+            "SELECT id, institution_id AS \"institutionId\" FROM students WHERE id = $1",
             [studentId]
         );
         if (studentCheck.rowCount === 0) {
             return res.status(404).json({
                 message: `Student with ID '${studentId}' not found`,
+            });
+        }
+
+        const student = studentCheck.rows[0];
+
+        if (req.user.role === "INSTITUTION_MEMBER") {
+            if (student.institutionId !== req.user.institutionId) {
+                return res.status(404).json({ message: `Student with ID '${studentId}' not found` });
+            }
+        } else if (req.user.role === "SYSTEM_ADMIN" && !req.user.canViewDocuments) {
+            return res.status(403).json({
+                message: "Access forbidden: System administrators do not receive unrestricted access to student documents without explicit authorization.",
             });
         }
 
@@ -768,18 +1289,25 @@ app.get("/api/students/:studentId/documents", async (req, res) => {
             [studentId]
         );
 
-        res.json(result.rows);
+        const rows = result.rows.map((row) => {
+            if (req.user.role === "REGULATORY_REVIEWER" && !req.user.canViewDocuments) {
+                return {
+                    ...row,
+                    extractedText: row.extractedText ? "[Document inspection clearance required to view raw text]" : null,
+                };
+            }
+            return row;
+        });
+
+        res.json(rows);
     } catch (error) {
         console.error("Error fetching student documents:", error);
-        res.status(500).json({
-            message: "Could not fetch student documents",
-            error: error.message,
-        });
+        res.status(500).json({ message: "Could not fetch student documents" });
     }
 });
 
 // GET /api/documents/:documentId - Retrieve document metadata by document ID
-app.get("/api/documents/:documentId", async (req, res) => {
+app.get("/api/documents/:documentId", authenticateToken, async (req, res) => {
     const documentId = req.params.documentId ? String(req.params.documentId).trim() : "";
     if (!documentId) {
         return res.status(400).json({ message: "Missing document ID parameter" });
@@ -788,25 +1316,27 @@ app.get("/api/documents/:documentId", async (req, res) => {
     try {
         const result = await pool.query(
             `SELECT
-                id,
-                student_id AS "studentId",
-                original_filename AS "originalFilename",
-                mime_type AS "mimeType",
-                file_extension AS "fileExtension",
-                file_size AS "fileSize",
-                storage_key AS "storageKey",
-                uploaded_at AS "uploadedAt",
-                processing_status AS "processingStatus",
-                review_status AS "reviewStatus",
-                created_at AS "createdAt",
-                updated_at AS "updatedAt",
-                extracted_text AS "extractedText",
-                extracted_at AS "extractedAt",
-                page_count AS "pageCount",
-                ocr_confidence AS "ocrConfidence",
-                ocr_error AS "ocrError"
-             FROM student_documents
-             WHERE id = $1`,
+                d.id,
+                d.student_id AS "studentId",
+                d.original_filename AS "originalFilename",
+                d.mime_type AS "mimeType",
+                d.file_extension AS "fileExtension",
+                d.file_size AS "fileSize",
+                d.storage_key AS "storageKey",
+                d.uploaded_at AS "uploadedAt",
+                d.processing_status AS "processingStatus",
+                d.review_status AS "reviewStatus",
+                d.created_at AS "createdAt",
+                d.updated_at AS "updatedAt",
+                d.extracted_text AS "extractedText",
+                d.extracted_at AS "extractedAt",
+                d.page_count AS "pageCount",
+                d.ocr_confidence AS "ocrConfidence",
+                d.ocr_error AS "ocrError",
+                s.institution_id AS "institutionId"
+             FROM student_documents d
+             JOIN students s ON d.student_id = s.id
+             WHERE d.id = $1`,
             [documentId]
         );
 
@@ -816,18 +1346,101 @@ app.get("/api/documents/:documentId", async (req, res) => {
             });
         }
 
-        res.json(result.rows[0]);
+        const doc = result.rows[0];
+
+        if (req.user.role === "INSTITUTION_MEMBER") {
+            if (doc.institutionId !== req.user.institutionId) {
+                return res.status(404).json({ message: `Document with ID '${documentId}' not found` });
+            }
+        } else if (req.user.role === "SYSTEM_ADMIN" && !req.user.canViewDocuments) {
+            return res.status(403).json({
+                message: "Access forbidden: System administrators do not receive unrestricted access to student documents without explicit authorization.",
+            });
+        }
+
+        if (req.user.role === "REGULATORY_REVIEWER" && !req.user.canViewDocuments) {
+            doc.extractedText = doc.extractedText ? "[Document inspection clearance required to view raw text]" : null;
+        }
+
+        res.json(doc);
     } catch (error) {
         console.error("Error fetching document metadata:", error);
-        res.status(500).json({
-            message: "Could not fetch document metadata",
-            error: error.message,
+        res.status(500).json({ message: "Could not fetch document metadata" });
+    }
+});
+
+// GET /api/documents/:documentId/file - Secure Document Download and Inspection
+app.get("/api/documents/:documentId/file", authenticateToken, async (req, res) => {
+    const documentId = req.params.documentId ? String(req.params.documentId).trim() : "";
+    if (!documentId) {
+        return res.status(400).json({ message: "Missing document ID parameter" });
+    }
+
+    try {
+        const result = await pool.query(
+            `SELECT d.id, d.student_id AS "studentId", d.original_filename AS "originalFilename",
+                    d.mime_type AS "mimeType", d.storage_key AS "storageKey",
+                    s.institution_id AS "institutionId"
+             FROM student_documents d
+             JOIN students s ON d.student_id = s.id
+             WHERE d.id = $1`,
+            [documentId]
+        );
+
+        if (result.rowCount === 0) {
+            return res.status(404).json({ message: `Document with ID '${documentId}' not found` });
+        }
+
+        const doc = result.rows[0];
+
+        if (req.user.role === "INSTITUTION_MEMBER") {
+            if (doc.institutionId !== req.user.institutionId) {
+                return res.status(404).json({ message: `Document with ID '${documentId}' not found` });
+            }
+        } else if (req.user.role === "REGULATORY_REVIEWER") {
+            if (!req.user.canViewDocuments) {
+                return res.status(403).json({
+                    message: "Access forbidden: Document inspection requires explicit regulatory authorization. Your account does not have document inspection clearance.",
+                });
+            }
+        } else if (req.user.role === "SYSTEM_ADMIN") {
+            if (!req.user.canViewDocuments) {
+                return res.status(403).json({
+                    message: "Access forbidden: System administrators do not receive unrestricted access to student documents without explicit authorization.",
+                });
+            }
+        }
+
+        const safePath = path.join(UPLOAD_DIR, path.basename(doc.storageKey));
+        if (!safePath.startsWith(UPLOAD_DIR) || !fs.existsSync(safePath)) {
+            return res.status(404).json({ message: "Stored document file not found on disk" });
+        }
+
+        const ipAddress = req.ip || req.headers["x-forwarded-for"] || req.socket.remoteAddress;
+        await recordAuditLog(pool, {
+            userId: req.user.id,
+            userEmail: req.user.email,
+            role: req.user.role,
+            action: "DOCUMENT_ACCESSED",
+            resourceType: "STUDENT_DOCUMENT",
+            resourceId: doc.id,
+            institutionId: doc.institutionId,
+            details: { studentId: doc.studentId, filename: doc.originalFilename },
+            ipAddress,
         });
+
+        res.setHeader("Content-Type", doc.mimeType);
+        res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(doc.originalFilename)}"`);
+        res.setHeader("X-Content-Type-Options", "nosniff");
+        res.sendFile(safePath);
+    } catch (error) {
+        console.error("Error serving document file:", error);
+        res.status(500).json({ message: "Could not serve document file" });
     }
 });
 
 // GET /api/documents/:documentId/text - Retrieve extracted text and OCR status
-app.get("/api/documents/:documentId/text", async (req, res) => {
+app.get("/api/documents/:documentId/text", authenticateToken, async (req, res) => {
     const documentId = req.params.documentId ? String(req.params.documentId).trim() : "";
     if (!documentId) {
         return res.status(400).json({ message: "Missing document ID parameter" });
@@ -836,17 +1449,19 @@ app.get("/api/documents/:documentId/text", async (req, res) => {
     try {
         const result = await pool.query(
             `SELECT
-                id,
-                student_id AS "studentId",
-                original_filename AS "originalFilename",
-                processing_status AS "processingStatus",
-                extracted_text AS "extractedText",
-                extracted_at AS "extractedAt",
-                page_count AS "pageCount",
-                ocr_confidence AS "ocrConfidence",
-                ocr_error AS "ocrError"
-             FROM student_documents
-             WHERE id = $1`,
+                d.id,
+                d.student_id AS "studentId",
+                d.original_filename AS "originalFilename",
+                d.processing_status AS "processingStatus",
+                d.extracted_text AS "extractedText",
+                d.extracted_at AS "extractedAt",
+                d.page_count AS "pageCount",
+                d.ocr_confidence AS "ocrConfidence",
+                d.ocr_error AS "ocrError",
+                s.institution_id AS "institutionId"
+             FROM student_documents d
+             JOIN students s ON d.student_id = s.id
+             WHERE d.id = $1`,
             [documentId]
         );
 
@@ -856,7 +1471,20 @@ app.get("/api/documents/:documentId/text", async (req, res) => {
             });
         }
 
-        res.json(result.rows[0]);
+        const doc = result.rows[0];
+        if (req.user.role === "INSTITUTION_MEMBER") {
+            if (doc.institutionId !== req.user.institutionId) {
+                return res.status(404).json({ message: `Document with ID '${documentId}' not found` });
+            }
+        } else if (req.user.role === "SYSTEM_ADMIN" && !req.user.canViewDocuments) {
+            return res.status(403).json({
+                message: "Access forbidden: System administrators do not receive unrestricted access to student documents without explicit authorization.",
+            });
+        } else if (req.user.role === "REGULATORY_REVIEWER" && !req.user.canViewDocuments) {
+            doc.extractedText = doc.extractedText ? "[Document inspection clearance required to view raw text]" : null;
+        }
+
+        res.json(doc);
     } catch (error) {
         console.error("Error fetching document text:", error);
         res.status(500).json({
@@ -867,7 +1495,7 @@ app.get("/api/documents/:documentId/text", async (req, res) => {
 });
 
 // POST /api/documents/:documentId/extract - Trigger local OCR / text extraction
-app.post("/api/documents/:documentId/extract", async (req, res) => {
+app.post("/api/documents/:documentId/extract", authenticateToken, async (req, res) => {
     const documentId = req.params.documentId ? String(req.params.documentId).trim() : "";
     if (!documentId) {
         return res.status(400).json({ message: "Missing document ID parameter" });
@@ -877,25 +1505,27 @@ app.post("/api/documents/:documentId/extract", async (req, res) => {
         // 1. Fetch document from PostgreSQL
         const docRes = await pool.query(
             `SELECT
-                id,
-                student_id AS "studentId",
-                original_filename AS "originalFilename",
-                mime_type AS "mimeType",
-                file_extension AS "fileExtension",
-                file_size AS "fileSize",
-                storage_key AS "storageKey",
-                uploaded_at AS "uploadedAt",
-                processing_status AS "processingStatus",
-                review_status AS "reviewStatus",
-                created_at AS "createdAt",
-                updated_at AS "updatedAt",
-                extracted_text AS "extractedText",
-                extracted_at AS "extractedAt",
-                page_count AS "pageCount",
-                ocr_confidence AS "ocrConfidence",
-                ocr_error AS "ocrError"
-             FROM student_documents
-             WHERE id = $1`,
+                d.id,
+                d.student_id AS "studentId",
+                d.original_filename AS "originalFilename",
+                d.mime_type AS "mimeType",
+                d.file_extension AS "fileExtension",
+                d.file_size AS "fileSize",
+                d.storage_key AS "storageKey",
+                d.uploaded_at AS "uploadedAt",
+                d.processing_status AS "processingStatus",
+                d.review_status AS "reviewStatus",
+                d.created_at AS "createdAt",
+                d.updated_at AS "updatedAt",
+                d.extracted_text AS "extractedText",
+                d.extracted_at AS "extractedAt",
+                d.page_count AS "pageCount",
+                d.ocr_confidence AS "ocrConfidence",
+                d.ocr_error AS "ocrError",
+                s.institution_id AS "institutionId"
+             FROM student_documents d
+             JOIN students s ON d.student_id = s.id
+             WHERE d.id = $1`,
             [documentId]
         );
 
@@ -906,6 +1536,16 @@ app.post("/api/documents/:documentId/extract", async (req, res) => {
         }
 
         const doc = docRes.rows[0];
+
+        if (req.user.role === "INSTITUTION_MEMBER") {
+            if (doc.institutionId !== req.user.institutionId) {
+                return res.status(404).json({ message: `Document with ID '${documentId}' not found` });
+            }
+        } else if (req.user.role === "SYSTEM_ADMIN") {
+            return res.status(403).json({
+                message: "Access forbidden: System administrators manage system operations and do not run student verification extractions.",
+            });
+        }
 
         // 2. Prevent simultaneous duplicate processing
         if (doc.processingStatus === "PROCESSING") {
@@ -1249,7 +1889,7 @@ function compareFieldsWithStudentRecord(candidateFields, studentRecord) {
 }
 
 // POST /api/documents/:documentId/compare - Deterministic Rule-Based Comparison
-app.post("/api/documents/:documentId/compare", async (req, res) => {
+app.post("/api/documents/:documentId/compare", authenticateToken, async (req, res) => {
     const documentId = req.params.documentId ? String(req.params.documentId).trim() : "";
     if (!documentId) {
         return res.status(400).json({ message: "Missing document ID parameter" });
@@ -1259,13 +1899,15 @@ app.post("/api/documents/:documentId/compare", async (req, res) => {
         // 1. Fetch document metadata and extracted text
         const docRes = await pool.query(
             `SELECT
-                id,
-                student_id AS "studentId",
-                original_filename AS "originalFilename",
-                processing_status AS "processingStatus",
-                extracted_text AS "extractedText"
-             FROM student_documents
-             WHERE id = $1`,
+                d.id,
+                d.student_id AS "studentId",
+                d.original_filename AS "originalFilename",
+                d.processing_status AS "processingStatus",
+                d.extracted_text AS "extractedText",
+                s.institution_id AS "institutionId"
+             FROM student_documents d
+             JOIN students s ON d.student_id = s.id
+             WHERE d.id = $1`,
             [documentId]
         );
 
@@ -1276,6 +1918,16 @@ app.post("/api/documents/:documentId/compare", async (req, res) => {
         }
 
         const doc = docRes.rows[0];
+
+        if (req.user.role === "INSTITUTION_MEMBER") {
+            if (doc.institutionId !== req.user.institutionId) {
+                return res.status(404).json({ message: `Document with ID '${documentId}' not found` });
+            }
+        } else if (req.user.role === "SYSTEM_ADMIN") {
+            return res.status(403).json({
+                message: "Access forbidden: System administrators manage system operations and do not run student verification comparisons.",
+            });
+        }
 
         if (doc.processingStatus !== "COMPLETED" || !doc.extractedText) {
             return res.status(422).json({
@@ -1382,7 +2034,7 @@ app.post("/api/documents/:documentId/compare", async (req, res) => {
 });
 
 // GET /api/documents/:documentId/findings - Retrieve Persisted Document Mismatch Findings
-app.get("/api/documents/:documentId/findings", async (req, res) => {
+app.get("/api/documents/:documentId/findings", authenticateToken, async (req, res) => {
     const documentId = req.params.documentId ? String(req.params.documentId).trim() : "";
     if (!documentId) {
         return res.status(400).json({ message: "Missing document ID parameter" });
@@ -1390,9 +2042,11 @@ app.get("/api/documents/:documentId/findings", async (req, res) => {
 
     try {
         const docRes = await pool.query(
-            `SELECT id, student_id AS "studentId", extracted_text AS "extractedText"
-             FROM student_documents
-             WHERE id = $1`,
+            `SELECT d.id, d.student_id AS "studentId", d.extracted_text AS "extractedText",
+                    s.institution_id AS "institutionId"
+             FROM student_documents d
+             JOIN students s ON d.student_id = s.id
+             WHERE d.id = $1`,
             [documentId]
         );
 
@@ -1400,6 +2054,12 @@ app.get("/api/documents/:documentId/findings", async (req, res) => {
             return res.status(404).json({
                 message: `Document with ID '${documentId}' not found`,
             });
+        }
+
+        if (req.user.role === "INSTITUTION_MEMBER") {
+            if (docRes.rows[0].institutionId !== req.user.institutionId) {
+                return res.status(404).json({ message: `Document with ID '${documentId}' not found` });
+            }
         }
 
         const candidateFields = extractCandidateDocumentFields(docRes.rows[0].extractedText);
@@ -1444,13 +2104,21 @@ app.get("/api/documents/:documentId/findings", async (req, res) => {
 });
 
 // GET /api/students/:studentId/document-findings - Retrieve all document findings for a student
-app.get("/api/students/:studentId/document-findings", async (req, res) => {
+app.get("/api/students/:studentId/document-findings", authenticateToken, async (req, res) => {
     const studentId = req.params.studentId ? String(req.params.studentId).trim() : "";
     if (!studentId) {
         return res.status(400).json({ message: "Missing student ID parameter" });
     }
 
     try {
+        const stuCheck = await pool.query("SELECT institution_id AS \"institutionId\" FROM students WHERE id = $1", [studentId]);
+        if (stuCheck.rowCount === 0) {
+            return res.status(404).json({ message: `Student with ID '${studentId}' not found` });
+        }
+        if (req.user.role === "INSTITUTION_MEMBER" && stuCheck.rows[0].institutionId !== req.user.institutionId) {
+            return res.status(404).json({ message: `Student with ID '${studentId}' not found` });
+        }
+
         const result = await pool.query(
             `SELECT
                 id,
@@ -1487,11 +2155,24 @@ app.get("/api/students/:studentId/document-findings", async (req, res) => {
 const handleUpdateFindingStatus = async (req, res) => {
     const { id } = req.params;
     const { status } = req.body;
+    const ipAddress = req.ip || req.headers["x-forwarded-for"] || req.socket.remoteAddress;
 
     const allowedStatuses = ["OPEN", "RESOLVED", "DISMISSED"];
     if (!allowedStatuses.includes(status)) {
         return res.status(400).json({
             message: `Invalid status '${status}'. Allowed statuses: ${allowedStatuses.join(", ")}`,
+        });
+    }
+
+    if (req.user.role === "INSTITUTION_MEMBER") {
+        return res.status(403).json({
+            message: "Access forbidden: Institution members cannot resolve or dismiss regulatory discrepancy findings. Only Regulatory Reviewers can resolve findings.",
+        });
+    }
+
+    if (req.user.role === "SYSTEM_ADMIN") {
+        return res.status(403).json({
+            message: "Access forbidden: System administrators do not make regulatory discrepancy determinations.",
         });
     }
 
@@ -1525,21 +2206,31 @@ const handleUpdateFindingStatus = async (req, res) => {
             });
         }
 
+        const updatedFinding = result.rows[0];
+
+        await recordAuditLog(pool, {
+            userId: req.user.id,
+            userEmail: req.user.email,
+            role: req.user.role,
+            action: "FINDING_STATUS_UPDATED",
+            resourceType: "DOCUMENT_FINDING",
+            resourceId: id,
+            details: { newStatus: status, studentId: updatedFinding.studentId },
+            ipAddress,
+        });
+
         res.json({
             message: `Finding status updated to '${status}' successfully`,
-            finding: result.rows[0],
+            finding: updatedFinding,
         });
     } catch (error) {
         console.error("Error updating finding status:", error);
-        res.status(500).json({
-            message: "Could not update finding status",
-            error: error.message,
-        });
+        res.status(500).json({ message: "Could not update finding status" });
     }
 };
 
-app.patch("/api/findings/:id/status", handleUpdateFindingStatus);
-app.patch("/api/document-findings/:id/status", handleUpdateFindingStatus);
+app.patch("/api/findings/:id/status", authenticateToken, handleUpdateFindingStatus);
+app.patch("/api/document-findings/:id/status", authenticateToken, handleUpdateFindingStatus);
 
 // ==========================================
 // Phase 1: Rule-Based Mismatch Detection Engine
@@ -1799,44 +2490,108 @@ async function runVerificationEngine(dbPool) {
     return issues;
 }
 
-// GET /api/issues - Return all validation issues from PostgreSQL
-app.get("/api/issues", async (req, res) => {
+// GET /api/issues - Return validation issues with institution isolation
+app.get("/api/issues", authenticateToken, async (req, res) => {
     try {
-        const result = await pool.query(`
-            SELECT
-                id,
-                record_id AS "recordId",
-                student_name AS "studentName",
-                apaar_test_id AS "apaarTestId",
-                institution_id AS "institutionId",
-                institution_name AS "institutionName",
-                programme_name AS "programmeName",
-                issue_type AS "issueType",
-                severity,
-                reason,
-                recommended_action AS "recommendedAction",
-                status,
-                detected_at AS "detectedAt"
-            FROM validation_issues
-            ORDER BY detected_at DESC, id
-        `);
+        let query;
+        let params = [];
 
+        if (req.user.role === "INSTITUTION_MEMBER") {
+            query = `
+                SELECT
+                    id,
+                    record_id AS "recordId",
+                    student_name AS "studentName",
+                    apaar_test_id AS "apaarTestId",
+                    institution_id AS "institutionId",
+                    institution_name AS "institutionName",
+                    programme_name AS "programmeName",
+                    issue_type AS "issueType",
+                    severity,
+                    reason,
+                    recommended_action AS "recommendedAction",
+                    status,
+                    detected_at AS "detectedAt"
+                FROM validation_issues
+                WHERE institution_id = $1
+                ORDER BY detected_at DESC, id
+            `;
+            params = [req.user.institutionId];
+        } else {
+            const filterInst = req.query.institutionId ? String(req.query.institutionId).trim() : null;
+            if (filterInst) {
+                query = `
+                    SELECT
+                        id,
+                        record_id AS "recordId",
+                        student_name AS "studentName",
+                        apaar_test_id AS "apaarTestId",
+                        institution_id AS "institutionId",
+                        institution_name AS "institutionName",
+                        programme_name AS "programmeName",
+                        issue_type AS "issueType",
+                        severity,
+                        reason,
+                        recommended_action AS "recommendedAction",
+                        status,
+                        detected_at AS "detectedAt"
+                    FROM validation_issues
+                    WHERE institution_id = $1
+                    ORDER BY detected_at DESC, id
+                `;
+                params = [filterInst];
+            } else {
+                query = `
+                    SELECT
+                        id,
+                        record_id AS "recordId",
+                        student_name AS "studentName",
+                        apaar_test_id AS "apaarTestId",
+                        institution_id AS "institutionId",
+                        institution_name AS "institutionName",
+                        programme_name AS "programmeName",
+                        issue_type AS "issueType",
+                        severity,
+                        reason,
+                        recommended_action AS "recommendedAction",
+                        status,
+                        detected_at AS "detectedAt"
+                    FROM validation_issues
+                    ORDER BY detected_at DESC, id
+                `;
+            }
+        }
+
+        const result = await pool.query(query, params);
         res.json(result.rows);
     } catch (error) {
         console.error("Error fetching validation issues:", error);
-        res.status(500).json({ message: "Could not fetch validation issues", error: error.message });
+        res.status(500).json({ message: "Could not fetch validation issues" });
     }
 });
 
-// PATCH /api/issues/:id/status - Resolve or dismiss validation issue and update linked student
-app.patch("/api/issues/:id/status", async (req, res) => {
+// PATCH /api/issues/:id/status - Resolve or dismiss validation issue with regulatory authorization
+app.patch("/api/issues/:id/status", authenticateToken, async (req, res) => {
     const { id } = req.params;
     const { status } = req.body;
+    const ipAddress = req.ip || req.headers["x-forwarded-for"] || req.socket.remoteAddress;
 
     const allowedStatuses = ["OPEN", "RESOLVED", "DISMISSED"];
     if (!allowedStatuses.includes(status)) {
         return res.status(400).json({
             message: `Invalid status '${status}'. Allowed statuses: ${allowedStatuses.join(", ")}`,
+        });
+    }
+
+    if (req.user.role === "INSTITUTION_MEMBER") {
+        return res.status(403).json({
+            message: "Access forbidden: Institution members cannot resolve or dismiss validation issues. Only Regulatory Reviewers can resolve issues.",
+        });
+    }
+
+    if (req.user.role === "SYSTEM_ADMIN") {
+        return res.status(403).json({
+            message: "Access forbidden: System administrators do not make regulatory validation determinations.",
         });
     }
 
@@ -1901,6 +2656,18 @@ app.patch("/api/issues/:id/status", async (req, res) => {
             }
         }
 
+        await recordAuditLog(pool, {
+            userId: req.user.id,
+            userEmail: req.user.email,
+            role: req.user.role,
+            action: "ISSUE_STATUS_UPDATED",
+            resourceType: "VALIDATION_ISSUE",
+            resourceId: id,
+            institutionId: updatedIssue.institutionId,
+            details: { newStatus: status, recordId: updatedIssue.recordId },
+            ipAddress,
+        });
+
         res.json({
             message: `Validation issue '${id}' marked as ${status}`,
             issue: updatedIssue,
@@ -1913,23 +2680,44 @@ app.patch("/api/issues/:id/status", async (req, res) => {
 });
 
 // POST /api/verification/scan - Trigger on-demand verification scan
-app.post("/api/verification/scan", async (req, res) => {
+app.post("/api/verification/scan", authenticateToken, async (req, res) => {
+    const ipAddress = req.ip || req.headers["x-forwarded-for"] || req.socket.remoteAddress;
     try {
         const issues = await runVerificationEngine(pool);
+
+        await recordAuditLog(pool, {
+            userId: req.user.id,
+            userEmail: req.user.email,
+            role: req.user.role,
+            action: "VERIFICATION_SCAN_TRIGGERED",
+            resourceType: "SYSTEM",
+            institutionId: req.user.institutionId || null,
+            details: { detectedCount: issues.length },
+            ipAddress,
+        });
+
         res.json({
             message: "Verification scan completed successfully",
             detectedCount: issues.length,
         });
     } catch (error) {
         console.error("Error during verification scan:", error);
-        res.status(500).json({ message: "Verification scan failed", error: error.message });
+        res.status(500).json({ message: "Verification scan failed" });
     }
 });
 
-// GET /api/institutions - Return institutions with dynamic programme enrolment aggregated from PostgreSQL
-app.get("/api/institutions", async (req, res) => {
+// GET /api/institutions - Return institutions with role-based scoping
+app.get("/api/institutions", authenticateToken, async (req, res) => {
     try {
-        const result = await pool.query(`
+        let whereClause = "";
+        let params = [];
+
+        if (req.user.role === "INSTITUTION_MEMBER") {
+            whereClause = "WHERE i.id = $1";
+            params = [req.user.institutionId];
+        }
+
+        const query = `
             SELECT
                 i.id,
                 i.aicte_code AS "aicteCode",
@@ -1967,16 +2755,353 @@ app.get("/api/institutions", async (req, res) => {
                 FROM students
                 GROUP BY institution_id, programme_id, programme_name
             ) sc ON sc.institution_id = p.institution_id AND (sc.programme_id = p.programme_id OR sc.programme_name = p.programme_name)
+            ${whereClause}
             GROUP BY i.id
             ORDER BY i.id
-        `);
+        `;
 
+        const result = await pool.query(query, params);
         res.json(result.rows);
     } catch (error) {
         console.error("Error fetching institutions:", error);
-        res.status(500).json({ message: "Could not fetch institutions", error: error.message });
+        res.status(500).json({ message: "Could not fetch institutions" });
     }
 });
+
+// ==========================================
+// System Administrator Endpoints
+// ==========================================
+
+// GET /api/admin/users - List system user accounts
+app.get("/api/admin/users", authenticateToken, requireRole("SYSTEM_ADMIN"), async (req, res) => {
+    try {
+        const result = await pool.query(`
+            SELECT u.id, u.email, u.role, u.institution_id AS "institutionId",
+                   i.name AS "institutionName", u.full_name AS "fullName",
+                   u.is_active AS "isActive", u.can_view_documents AS "canViewDocuments",
+                   u.created_at AS "createdAt", u.last_login_at AS "lastLoginAt"
+            FROM users u
+            LEFT JOIN institutions i ON u.institution_id = i.id
+            ORDER BY u.created_at ASC
+        `);
+        res.json(result.rows);
+    } catch (err) {
+        console.error("Admin fetch users error:", err);
+        res.status(500).json({ message: "Failed to fetch user accounts" });
+    }
+});
+
+// POST /api/admin/users - Create new user account
+app.post("/api/admin/users", authenticateToken, requireRole("SYSTEM_ADMIN"), async (req, res) => {
+    const { email, password, role, institutionId, fullName, canViewDocuments } = req.body || {};
+    const ipAddress = req.ip || req.headers["x-forwarded-for"] || req.socket.remoteAddress;
+
+    if (!email || !password || !role || !fullName) {
+        return res.status(400).json({ message: "Email, password, role, and full name are required" });
+    }
+
+    const cleanEmail = String(email).trim().toLowerCase();
+    const cleanRole = String(role).trim().toUpperCase();
+
+    const validRoles = ["INSTITUTION_MEMBER", "REGULATORY_REVIEWER", "SYSTEM_ADMIN"];
+    if (!validRoles.includes(cleanRole)) {
+        return res.status(400).json({ message: `Invalid role. Allowed roles: ${validRoles.join(", ")}` });
+    }
+
+    if (cleanRole === "INSTITUTION_MEMBER" && !institutionId) {
+        return res.status(400).json({ message: "Institution ID is required for Institution Member accounts" });
+    }
+
+    try {
+        const existing = await pool.query("SELECT id FROM users WHERE LOWER(email) = $1", [cleanEmail]);
+        if (existing.rowCount > 0) {
+            return res.status(409).json({ message: `A user account with email '${cleanEmail}' already exists` });
+        }
+
+        const passwordHash = await bcrypt.hash(password, 10);
+        const newUserId = `USER-${Date.now()}-${crypto.randomBytes(3).toString("hex")}`;
+
+        const insertRes = await pool.query(
+            `INSERT INTO users (
+                id, email, password_hash, role, institution_id, full_name,
+                is_active, can_view_documents, created_at, updated_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, TRUE, $7, NOW(), NOW())
+            RETURNING id, email, role, institution_id AS "institutionId", full_name AS "fullName",
+                      is_active AS "isActive", can_view_documents AS "canViewDocuments", created_at AS "createdAt"`,
+            [
+                newUserId,
+                cleanEmail,
+                passwordHash,
+                cleanRole,
+                cleanRole === "INSTITUTION_MEMBER" ? institutionId : null,
+                fullName.trim(),
+                Boolean(canViewDocuments),
+            ]
+        );
+
+        await recordAuditLog(pool, {
+            userId: req.user.id,
+            userEmail: req.user.email,
+            role: req.user.role,
+            action: "USER_CREATED",
+            resourceType: "USER",
+            resourceId: newUserId,
+            institutionId: cleanRole === "INSTITUTION_MEMBER" ? institutionId : null,
+            details: { createdUserEmail: cleanEmail, role: cleanRole },
+            ipAddress,
+        });
+
+        res.status(201).json({
+            message: "User account created successfully",
+            user: insertRes.rows[0],
+        });
+    } catch (err) {
+        console.error("Admin create user error:", err);
+        res.status(500).json({ message: "Failed to create user account" });
+    }
+});
+
+// PATCH /api/admin/users/:id - Update user role, status, or document access
+app.patch("/api/admin/users/:id", authenticateToken, requireRole("SYSTEM_ADMIN"), async (req, res) => {
+    const { id } = req.params;
+    const { role, institutionId, isActive, canViewDocuments, fullName } = req.body || {};
+    const ipAddress = req.ip || req.headers["x-forwarded-for"] || req.socket.remoteAddress;
+
+    try {
+        const userRes = await pool.query("SELECT * FROM users WHERE id = $1", [id]);
+        if (userRes.rowCount === 0) {
+            return res.status(404).json({ message: `User with ID '${id}' not found` });
+        }
+
+        const existing = userRes.rows[0];
+
+        // Guard: Prevent admin from deactivating themselves or removing their admin role
+        if (existing.id === req.user.id) {
+            if (isActive === false) {
+                return res.status(400).json({ message: "You cannot deactivate your own administrative account" });
+            }
+            if (role && role !== "SYSTEM_ADMIN") {
+                return res.status(400).json({ message: "You cannot change your own administrative role" });
+            }
+        }
+
+        const newRole = role !== undefined ? String(role).trim().toUpperCase() : existing.role;
+        const newInstId = institutionId !== undefined ? institutionId : existing.institution_id;
+        const newIsActive = isActive !== undefined ? Boolean(isActive) : existing.is_active;
+        const newCanViewDocs = canViewDocuments !== undefined ? Boolean(canViewDocuments) : existing.can_view_documents;
+        const newFullName = fullName !== undefined ? String(fullName).trim() : existing.full_name;
+
+        const updateRes = await pool.query(
+            `UPDATE users
+             SET role = $1,
+                 institution_id = $2,
+                 is_active = $3,
+                 can_view_documents = $4,
+                 full_name = $5,
+                 updated_at = NOW()
+             WHERE id = $6
+             RETURNING id, email, role, institution_id AS "institutionId", full_name AS "fullName",
+                       is_active AS "isActive", can_view_documents AS "canViewDocuments", updated_at AS "updatedAt"`,
+            [
+                newRole,
+                newRole === "INSTITUTION_MEMBER" ? newInstId : null,
+                newIsActive,
+                newCanViewDocs,
+                newFullName,
+                id,
+            ]
+        );
+
+        await recordAuditLog(pool, {
+            userId: req.user.id,
+            userEmail: req.user.email,
+            role: req.user.role,
+            action: "USER_UPDATED",
+            resourceType: "USER",
+            resourceId: id,
+            institutionId: newInstId,
+            details: { updatedUserId: id, role: newRole, isActive: newIsActive, canViewDocs: newCanViewDocs },
+            ipAddress,
+        });
+
+        res.json({
+            message: "User updated successfully",
+            user: updateRes.rows[0],
+        });
+    } catch (err) {
+        console.error("Admin update user error:", err);
+        res.status(500).json({ message: "Failed to update user account" });
+    }
+});
+
+// GET /api/admin/audit-logs - Query audit trail with filtering and pagination
+app.get("/api/admin/audit-logs", authenticateToken, requireRole("SYSTEM_ADMIN"), async (req, res) => {
+    try {
+        const limit = Math.min(parseInt(req.query.limit || "50", 10), 200);
+        const offset = Math.max(parseInt(req.query.offset || "0", 10), 0);
+        const { action, role, institutionId } = req.query;
+
+        let query = `
+            SELECT id, user_id AS "userId", user_email AS "userEmail", role,
+                   action, resource_type AS "resourceType", resource_id AS "resourceId",
+                   institution_id AS "institutionId", details, ip_address AS "ipAddress",
+                   created_at AS "createdAt"
+            FROM audit_logs
+            WHERE 1=1
+        `;
+        const params = [];
+
+        if (action) {
+            params.push(String(action).trim());
+            query += " AND action = $" + params.length;
+        }
+        if (role) {
+            params.push(String(role).trim().toUpperCase());
+            query += " AND role = $" + params.length;
+        }
+        if (institutionId) {
+            params.push(String(institutionId).trim());
+            query += " AND institution_id = $" + params.length;
+        }
+
+        query += " ORDER BY created_at DESC LIMIT $" + (params.length + 1) + " OFFSET $" + (params.length + 2);
+        params.push(limit, offset);
+
+        const result = await pool.query(query, params);
+        const countRes = await pool.query("SELECT COUNT(*)::int AS count FROM audit_logs");
+
+        res.json({
+            totalCount: countRes.rows[0].count,
+            limit,
+            offset,
+            logs: result.rows,
+        });
+    } catch (err) {
+        console.error("Admin fetch audit logs error:", err);
+        res.status(500).json({ message: "Failed to fetch audit logs" });
+    }
+});
+
+// GET /api/admin/system-health - Operational system health, database metrics, and storage stats
+app.get("/api/admin/system-health", authenticateToken, requireRole("SYSTEM_ADMIN"), async (req, res) => {
+    try {
+        const [usersCount, logsCount, instCount, stuCount, docCount, issuesCount, findingsCount] = await Promise.all([
+            pool.query("SELECT COUNT(*)::int AS c FROM users"),
+            pool.query("SELECT COUNT(*)::int AS c FROM audit_logs"),
+            pool.query("SELECT COUNT(*)::int AS c FROM institutions"),
+            pool.query("SELECT COUNT(*)::int AS c FROM students"),
+            pool.query("SELECT COUNT(*)::int AS c FROM student_documents"),
+            pool.query("SELECT COUNT(*)::int AS c FROM validation_issues"),
+            pool.query("SELECT COUNT(*)::int AS c FROM document_mismatch_findings"),
+        ]);
+
+        let diskDocsCount = 0;
+        let totalDiskBytes = 0;
+        try {
+            if (fs.existsSync(UPLOAD_DIR)) {
+                const files = fs.readdirSync(UPLOAD_DIR);
+                diskDocsCount = files.length;
+                for (const f of files) {
+                    const st = fs.statSync(path.join(UPLOAD_DIR, f));
+                    totalDiskBytes += st.size;
+                }
+            }
+        } catch (fsErr) {
+            console.error("Upload dir stat error:", fsErr);
+        }
+
+        res.json({
+            status: "healthy",
+            uptimeSeconds: Math.floor(process.uptime()),
+            timestamp: new Date().toISOString(),
+            nodeVersion: process.version,
+            platform: process.platform,
+            memory: process.memoryUsage(),
+            database: {
+                connected: true,
+                totalConnections: pool.totalCount,
+                idleConnections: pool.idleCount,
+                waitingClients: pool.waitingCount,
+            },
+            recordCounts: {
+                users: usersCount.rows[0].c,
+                auditLogs: logsCount.rows[0].c,
+                institutions: instCount.rows[0].c,
+                students: stuCount.rows[0].c,
+                studentDocuments: docCount.rows[0].c,
+                validationIssues: issuesCount.rows[0].c,
+                documentMismatchFindings: findingsCount.rows[0].c,
+            },
+            storage: {
+                isolatedDir: true,
+                filesOnDisk: diskDocsCount,
+                totalSizeBytes: totalDiskBytes,
+            },
+        });
+    } catch (err) {
+        console.error("Admin system health error:", err);
+        res.status(500).json({ message: "Failed to retrieve system health metrics" });
+    }
+});
+
+// PATCH /api/admin/institutions/:id - Update institution metadata
+app.patch("/api/admin/institutions/:id", authenticateToken, requireRole("SYSTEM_ADMIN"), async (req, res) => {
+    const { id } = req.params;
+    const { name, aicteCode, state, city, type, establishedYear, contactEmail } = req.body || {};
+    const ipAddress = req.ip || req.headers["x-forwarded-for"] || req.socket.remoteAddress;
+
+    try {
+        const checkRes = await pool.query("SELECT * FROM institutions WHERE id = $1", [id]);
+        if (checkRes.rowCount === 0) {
+            return res.status(404).json({ message: `Institution '${id}' not found` });
+        }
+
+        const updateRes = await pool.query(
+            `UPDATE institutions
+             SET name = COALESCE($1, name),
+                 aicte_code = COALESCE($2, aicte_code),
+                 state = COALESCE($3, state),
+                 city = COALESCE($4, city),
+                 type = COALESCE($5, type),
+                 established_year = COALESCE($6, established_year),
+                 contact_email = COALESCE($7, contact_email)
+             WHERE id = $8
+             RETURNING id, aicte_code AS "aicteCode", name, state, city, type,
+                       established_year AS "establishedYear", contact_email AS "contactEmail"`,
+            [
+                name ? String(name).trim() : null,
+                aicteCode ? String(aicteCode).trim() : null,
+                state ? String(state).trim() : null,
+                city ? String(city).trim() : null,
+                type ? String(type).trim() : null,
+                establishedYear ? parseInt(establishedYear, 10) : null,
+                contactEmail ? String(contactEmail).trim() : null,
+                id,
+            ]
+        );
+
+        await recordAuditLog(pool, {
+            userId: req.user.id,
+            userEmail: req.user.email,
+            role: req.user.role,
+            action: "INSTITUTION_METADATA_UPDATED",
+            resourceType: "INSTITUTION",
+            resourceId: id,
+            institutionId: id,
+            details: { updatedFields: Object.keys(req.body) },
+            ipAddress,
+        });
+
+        res.json({
+            message: "Institution metadata updated successfully",
+            institution: updateRes.rows[0],
+        });
+    } catch (err) {
+        console.error("Admin update institution error:", err);
+        res.status(500).json({ message: "Failed to update institution metadata" });
+    }
+});
+
 
 // Server bootstrap with schema assurance and idempotent demo record initialization
 async function startServer() {
@@ -2211,6 +3336,61 @@ async function startServer() {
                 'REQUIRES_REVIEW', 'Issue resolved by administrator review.', NOW()
             )
             ON CONFLICT (id) DO NOTHING
+        `);
+
+        // 6b. Ensure users and audit_logs tables exist (Migration 004 & 005)
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS users (
+                id VARCHAR(100) PRIMARY KEY,
+                email VARCHAR(255) NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                role VARCHAR(50) NOT NULL CHECK (role IN ('INSTITUTION_MEMBER', 'REGULATORY_REVIEWER', 'SYSTEM_ADMIN')),
+                institution_id VARCHAR(50) REFERENCES institutions(id) ON DELETE SET NULL,
+                full_name VARCHAR(150) NOT NULL,
+                is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                can_view_documents BOOLEAN NOT NULL DEFAULT FALSE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                last_login_at TIMESTAMPTZ,
+                CONSTRAINT chk_institution_member_has_inst CHECK (
+                    (role = 'INSTITUTION_MEMBER' AND institution_id IS NOT NULL) OR
+                    (role != 'INSTITUTION_MEMBER')
+                )
+            );
+            CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+            CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
+            CREATE INDEX IF NOT EXISTS idx_users_institution_id ON users(institution_id);
+
+            CREATE TABLE IF NOT EXISTS audit_logs (
+                id VARCHAR(100) PRIMARY KEY,
+                user_id VARCHAR(100) REFERENCES users(id) ON DELETE SET NULL,
+                user_email VARCHAR(255) NOT NULL,
+                role VARCHAR(50) NOT NULL,
+                action VARCHAR(100) NOT NULL,
+                resource_type VARCHAR(100) NOT NULL,
+                resource_id VARCHAR(100),
+                institution_id VARCHAR(50),
+                details JSONB DEFAULT '{}'::jsonb,
+                ip_address VARCHAR(100),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            CREATE INDEX IF NOT EXISTS idx_audit_user_id ON audit_logs(user_id);
+            CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_logs(action);
+            CREATE INDEX IF NOT EXISTS idx_audit_institution_id ON audit_logs(institution_id);
+            CREATE INDEX IF NOT EXISTS idx_audit_created_at ON audit_logs(created_at DESC);
+        `);
+
+        // 6c. Seed default demo users if not existing
+        await pool.query(`
+            INSERT INTO users (id, email, password_hash, role, institution_id, full_name, is_active, can_view_documents, created_at, updated_at)
+            VALUES
+            ('USER-INST-001', 'inst1@nitdelhi.ac.in', '$2b$10$fOOIhptZoXNQh7hdcXCDnuB7djK4m3u3ua6lIywBq9DfYX.SAaVzG', 'INSTITUTION_MEMBER', 'DEMO-INST-001', 'Prof. Rajesh Sharma (NIT Delhi Member)', TRUE, TRUE, NOW(), NOW()),
+            ('USER-INST-002', 'inst2@mctar.ac.in', '$2b$10$fOOIhptZoXNQh7hdcXCDnuB7djK4m3u3ua6lIywBq9DfYX.SAaVzG', 'INSTITUTION_MEMBER', 'DEMO-INST-002', 'Dr. Sunita Deshmukh (Maharashtra Tech Member)', TRUE, TRUE, NOW(), NOW()),
+            ('USER-INST-003', 'inst3@kiats.ac.in', '$2b$10$fOOIhptZoXNQh7hdcXCDnuB7djK4m3u3ua6lIywBq9DfYX.SAaVzG', 'INSTITUTION_MEMBER', 'DEMO-INST-003', 'Prof. Ramesh Gowda (Karnataka Tech Member)', TRUE, TRUE, NOW(), NOW()),
+            ('USER-REV-001', 'reviewer@aicte-india.org', '$2b$10$fOOIhptZoXNQh7hdcXCDnuB7djK4m3u3ua6lIywBq9DfYX.SAaVzG', 'REGULATORY_REVIEWER', NULL, 'Dr. Arvind Swaminathan (Regulatory Reviewer)', TRUE, FALSE, NOW(), NOW()),
+            ('USER-REV-002', 'reviewer.auth@aicte-india.org', '$2b$10$fOOIhptZoXNQh7hdcXCDnuB7djK4m3u3ua6lIywBq9DfYX.SAaVzG', 'REGULATORY_REVIEWER', NULL, 'Dr. Kavita Nair (Authorized Reviewer)', TRUE, TRUE, NOW(), NOW()),
+            ('USER-ADM-001', 'admin@aicte-india.org', '$2b$10$fOOIhptZoXNQh7hdcXCDnuB7djK4m3u3ua6lIywBq9DfYX.SAaVzG', 'SYSTEM_ADMIN', NULL, 'Vikramaditya Verma (System Administrator)', TRUE, FALSE, NOW(), NOW())
+            ON CONFLICT (email) DO NOTHING
         `);
 
         // 7. Run initial verification engine scan to detect and synchronize issues

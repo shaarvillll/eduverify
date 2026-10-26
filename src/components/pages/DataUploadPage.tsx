@@ -19,7 +19,7 @@ import { SAMPLE_CSV_TEMPLATE } from '../../data/syntheticData';
 import { SyntheticBanner } from '../common/SyntheticBanner';
 
 export const DataUploadPage: React.FC = () => {
-  const { importStudentBatch, institutions, setActiveTab } = useApp();
+  const { importStudentBatch, institutions, setActiveTab, currentUser } = useApp();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // States
@@ -175,7 +175,19 @@ export const DataUploadPage: React.FC = () => {
 
     const newStudents: StudentRecord[] = acceptedRows.map((r) => {
       const inst = institutions.find((i) => i.aicteCode === r.institutionCode);
-      const matchedProg = inst?.programmes.find((p) => p.programmeName === r.programmeName);
+      const matchedProg = inst?.programmes?.find((p) => p.programmeName === r.programmeName);
+
+      const resolvedInstId = currentUser?.role === 'INSTITUTION_MEMBER' && currentUser.institutionId
+        ? currentUser.institutionId
+        : (inst ? inst.id : (r.institutionCode || 'DEMO-INST-001'));
+
+      const resolvedInstName = currentUser?.role === 'INSTITUTION_MEMBER' && currentUser.institutionName
+        ? currentUser.institutionName
+        : (inst ? inst.name : (r.institutionCode ? `Institution (${r.institutionCode})` : 'Unassigned Institution'));
+
+      const resolvedStatus = currentUser?.role === 'INSTITUTION_MEMBER'
+        ? (r.warnings.length > 0 ? 'REQUIRES_REVIEW' : 'PENDING')
+        : (r.warnings.length > 0 ? 'REQUIRES_REVIEW' : 'VALIDATED');
 
       return {
         id: r.studentId,
@@ -184,14 +196,14 @@ export const DataUploadPage: React.FC = () => {
         gender: r.gender ? (r.gender as any) : undefined,
         dob: undefined,
         category: undefined,
-        institutionId: inst ? inst.id : (r.institutionCode || 'INST-UNKNOWN'),
-        institutionName: inst ? inst.name : (r.institutionCode ? `Institution (${r.institutionCode})` : 'Unassigned Institution'),
+        institutionId: resolvedInstId,
+        institutionName: resolvedInstName,
         programmeId: matchedProg ? matchedProg.programmeId : 'PROG-BATCH',
         programmeName: r.programmeName || 'B.Tech - Technical Studies',
         academicYear: r.academicYear || '2024-2025',
         semester: null,
         admissionQuota: r.admissionQuota ? (r.admissionQuota as any) : undefined,
-        validationStatus: r.warnings.length > 0 ? 'REQUIRES_REVIEW' : 'VALIDATED',
+        validationStatus: resolvedStatus,
         discrepancyNote: r.warnings.length > 0 ? r.warnings.join('; ') : undefined,
         lastUpdated: new Date().toISOString(),
       };
@@ -239,6 +251,15 @@ export const DataUploadPage: React.FC = () => {
           <span>Download Sample Template</span>
         </button>
       </div>
+
+      {currentUser?.role === 'REGULATORY_REVIEWER' && (
+        <div className="p-3.5 bg-purple-50 border border-purple-200 rounded-lg text-xs text-purple-900 flex items-center gap-2.5">
+          <Info className="w-4 h-4 text-purple-600 shrink-0" />
+          <span>
+            <strong>Regulatory Reviewer Mode:</strong> You are logged in with reviewer credentials. Data ingestion is restricted to Institution Members and System Administrators. Please switch to an Institution Member account (NIT Delhi or Maharashtra Tech) in the top bar to test CSV batch uploading.
+          </span>
+        </div>
+      )}
 
       {/* Drag & Drop Upload Container */}
       <div

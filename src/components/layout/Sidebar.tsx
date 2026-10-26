@@ -12,6 +12,9 @@ import {
   ShieldCheck,
   CheckCircle,
   X,
+  Activity,
+  UserCheck,
+  FileText,
 } from 'lucide-react';
 import { useApp, NavTab } from '../../context/AppContext';
 
@@ -28,17 +31,49 @@ export const Sidebar: React.FC<SidebarProps> = ({
   mobileOpen,
   setMobileOpen,
 }) => {
-  const { activeTab, setActiveTab, stats } = useApp();
+  const { activeTab, setActiveTab, stats, currentUser } = useApp();
 
-  const navItems: { id: NavTab; label: string; icon: React.ComponentType<{ className?: string }>; badge?: number }[] = [
-    { id: 'overview', label: 'Overview', icon: LayoutDashboard },
-    { id: 'students', label: 'Student Records', icon: Users, badge: stats.totalStudents },
-    { id: 'upload', label: 'Data Upload', icon: UploadCloud },
-    { id: 'issues', label: 'Validation Issues', icon: AlertOctagon, badge: stats.openIssuesCount },
-    { id: 'institutions', label: 'Institutions', icon: Building2 },
-    { id: 'reports', label: 'Reports & Audit', icon: FileSpreadsheet },
-    { id: 'settings', label: 'Settings', icon: Settings },
-  ];
+  // Role-specific navigation items
+  let navItems: { id: NavTab; label: string; icon: React.ComponentType<{ className?: string }>; badge?: number }[] = [];
+
+  if (currentUser?.role === 'INSTITUTION_MEMBER') {
+    navItems = [
+      { id: 'overview', label: 'Overview', icon: LayoutDashboard },
+      { id: 'students', label: 'My Student Records', icon: Users, badge: stats.totalStudents },
+      { id: 'upload', label: 'Data Upload', icon: UploadCloud },
+      { id: 'issues', label: 'Validation Issues', icon: AlertOctagon, badge: stats.openIssuesCount },
+      { id: 'reports', label: 'Reports & Compliance', icon: FileSpreadsheet },
+      { id: 'settings', label: 'Settings', icon: Settings },
+    ];
+  } else if (currentUser?.role === 'REGULATORY_REVIEWER') {
+    navItems = [
+      { id: 'overview', label: 'Regulatory Overview', icon: LayoutDashboard },
+      { id: 'institutions', label: 'Institution Directory', icon: Building2 },
+      { id: 'issues', label: 'Validation Issues Queue', icon: AlertOctagon, badge: stats.openIssuesCount },
+      { id: 'students', label: 'Student Registry Review', icon: Users, badge: stats.totalStudents },
+      { id: 'reports', label: 'Audit & Reports', icon: FileSpreadsheet },
+      { id: 'settings', label: 'Settings', icon: Settings },
+    ];
+  } else if (currentUser?.role === 'SYSTEM_ADMIN') {
+    navItems = [
+      { id: 'system-health', label: 'System Health', icon: Activity },
+      { id: 'users', label: 'User Management', icon: UserCheck },
+      { id: 'institutions', label: 'Institution Directory', icon: Building2 },
+      { id: 'audit-logs', label: 'Security Audit Logs', icon: FileText },
+      { id: 'overview', label: 'Metrics Overview', icon: LayoutDashboard },
+      { id: 'settings', label: 'System Settings', icon: Settings },
+    ];
+  } else {
+    navItems = [
+      { id: 'overview', label: 'Overview', icon: LayoutDashboard },
+      { id: 'students', label: 'Student Records', icon: Users, badge: stats.totalStudents },
+      { id: 'upload', label: 'Data Upload', icon: UploadCloud },
+      { id: 'issues', label: 'Validation Issues', icon: AlertOctagon, badge: stats.openIssuesCount },
+      { id: 'institutions', label: 'Institutions', icon: Building2 },
+      { id: 'reports', label: 'Reports & Audit', icon: FileSpreadsheet },
+      { id: 'settings', label: 'Settings', icon: Settings },
+    ];
+  }
 
   const handleSelectTab = (tab: NavTab) => {
     setActiveTab(tab);
@@ -73,7 +108,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   EduVerify
                 </span>
                 <span className="text-[10px] font-medium text-slate-400 tracking-wider uppercase truncate">
-                  APAAR Student Registry
+                  {currentUser?.role === 'INSTITUTION_MEMBER'
+                    ? 'Institution Portal'
+                    : currentUser?.role === 'REGULATORY_REVIEWER'
+                    ? 'Regulatory Reviewer'
+                    : currentUser?.role === 'SYSTEM_ADMIN'
+                    ? 'Central Admin'
+                    : 'APAAR Student Registry'}
                 </span>
               </div>
             )}
@@ -97,18 +138,28 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </button>
         </div>
 
-        {/* Institution Badge */}
+        {/* Institution / Role Authority Badge */}
         {!isCollapsed && (
           <div className="px-4 py-2.5 mx-3 my-3 bg-slate-800/60 border border-slate-700/60 rounded text-xs">
-            <div className="text-[11px] text-slate-400 font-medium uppercase tracking-wider">
-              Institutional Authority
+            <div className="text-[10px] text-slate-400 font-medium uppercase tracking-wider">
+              {currentUser?.role === 'INSTITUTION_MEMBER'
+                ? 'Authenticated Institution'
+                : currentUser?.role === 'REGULATORY_REVIEWER'
+                ? 'Regulatory Authority'
+                : 'System Administration'}
             </div>
-            <div className="text-white font-semibold truncate mt-0.5">
-              AICTE Technical Cell
+            <div className="text-white font-semibold truncate mt-0.5" title={currentUser?.institutionName || currentUser?.fullName || ''}>
+              {currentUser?.institutionName || currentUser?.fullName || 'AICTE Technical Cell'}
             </div>
             <div className="text-[11px] text-emerald-400 flex items-center gap-1.5 mt-1">
               <CheckCircle className="w-3 h-3" />
-              <span>Verification Node Online</span>
+              <span>
+                {currentUser?.role === 'INSTITUTION_MEMBER'
+                  ? 'Isolated Institution Tenant'
+                  : currentUser?.role === 'REGULATORY_REVIEWER'
+                  ? 'Review Clearance Active'
+                  : 'Full Operations Clearance'}
+              </span>
             </div>
           </div>
         )}
@@ -154,11 +205,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
           {!isCollapsed ? (
             <div>
               <div className="flex items-center justify-between text-slate-400 font-medium">
-                <span>Version 1.0-Demo</span>
+                <span>Version 1.0-Prototype</span>
                 <span className="text-blue-400">AICTE Protocol</span>
               </div>
               <div className="text-[10px] text-slate-500 mt-1">
-                Fictional Synthetic Dataset
+                Role-Based Multi-Institution Prototype
               </div>
             </div>
           ) : (
