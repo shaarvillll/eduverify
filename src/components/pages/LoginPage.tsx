@@ -151,7 +151,7 @@ export const LoginPage: React.FC = () => {
               {isSubmitting ? (
                 <>
                   <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                  <span>Verifying Credentials...</span>
+                  <span>Verifying Credentials with PostgreSQL...</span>
                 </>
               ) : (
                 <>
@@ -163,12 +163,17 @@ export const LoginPage: React.FC = () => {
           </form>
 
           {/* Quick Demo Role Selectors */}
-          <div className="mt-8 pt-6 border-t border-slate-100">
-            <div className="flex items-center justify-between mb-3">
-              <span className="text-xs font-semibold text-slate-900 uppercase tracking-wider">
-                Instant Demo Account Sign-in
-              </span>
-              <span className="text-[10px] text-slate-500">1-click test roles</span>
+          <div className="mt-7 pt-5 border-t border-slate-100">
+            <div className="mb-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-slate-900 uppercase tracking-wider">
+                  Instant Demo Account Sign-in
+                </span>
+                <span className="text-[10px] text-blue-600 font-medium">1-click test roles</span>
+              </div>
+              <p className="text-[11px] text-slate-500 mt-1">
+                Click any role below to authenticate instantly with its PostgreSQL account and signed JWT.
+              </p>
             </div>
 
             <div className="space-y-2">

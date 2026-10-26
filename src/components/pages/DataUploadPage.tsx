@@ -243,13 +243,24 @@ export const DataUploadPage: React.FC = () => {
           </p>
         </div>
 
-        <button
-          onClick={handleDownloadTemplate}
-          className="flex items-center gap-2 px-3.5 py-2 text-xs font-semibold text-slate-700 hover:text-slate-900 bg-slate-50 hover:bg-slate-100 rounded border border-slate-200 transition-colors shrink-0"
-        >
-          <Download className="w-4 h-4 text-slate-500" />
-          <span>Download Sample Template</span>
-        </button>
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            onClick={() => setRows(parseRawCSV(SAMPLE_CSV_TEMPLATE))}
+            className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-blue-700 hover:text-blue-900 bg-blue-50 hover:bg-blue-100 rounded border border-blue-200 transition-colors cursor-pointer"
+            title="Pre-fill sample synthetic batch for instant demonstration"
+          >
+            <UploadCloud className="w-4 h-4 text-blue-600" />
+            <span>Load Demo Batch</span>
+          </button>
+          <button
+            onClick={handleDownloadTemplate}
+            className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 hover:text-slate-900 bg-slate-50 hover:bg-slate-100 rounded border border-slate-200 transition-colors cursor-pointer"
+            title="Download CSV spreadsheet template"
+          >
+            <Download className="w-4 h-4 text-slate-500" />
+            <span>Download Template</span>
+          </button>
+        </div>
       </div>
 
       {currentUser?.role === 'REGULATORY_REVIEWER' && (

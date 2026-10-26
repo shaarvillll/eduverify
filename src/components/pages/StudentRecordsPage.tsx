@@ -20,6 +20,7 @@ import {
   RotateCcw,
   Download,
   Lock,
+  Info,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { StudentRecord, ValidationStatus, StudentDocument, DocumentMismatchFinding } from '../../types';
@@ -847,80 +848,89 @@ export const StudentRecordsPage: React.FC = () => {
                 Securely store synthetic student dossier files (PDF, PNG, JPEG, max 10 MB). Stored in isolated backend storage for regulatory audits.
               </p>
 
-              {/* Upload Input & Action */}
-              <div className="p-3 bg-slate-50 border border-slate-200 rounded-md space-y-2.5">
-                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg"
-                    onChange={handleFileSelect}
-                    disabled={isUploadingDoc}
-                    className="block w-full text-xs text-slate-600 file:mr-3 file:py-2 file:px-3 file:rounded file:border file:border-slate-300 file:text-xs file:font-semibold file:bg-white file:text-slate-700 hover:file:bg-slate-100 cursor-pointer"
-                  />
-                  <button
-                    type="button"
-                    onClick={handleUploadDocument}
-                    disabled={!selectedUploadFile || isUploadingDoc}
-                    className={`flex items-center justify-center gap-1.5 px-4 py-2 min-h-[38px] text-xs font-semibold rounded shrink-0 transition-colors ${
-                      !selectedUploadFile || isUploadingDoc
-                        ? 'bg-slate-200 text-slate-400 cursor-not-allowed'
-                        : 'bg-blue-600 text-white hover:bg-blue-700 shadow-2xs'
-                    }`}
-                  >
-                    {isUploadingDoc ? (
-                      <>
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        <span>Uploading...</span>
-                      </>
-                    ) : (
-                      <>
-                        <Upload className="w-3.5 h-3.5" />
-                        <span>Upload File</span>
-                      </>
-                    )}
-                  </button>
+              {/* Upload Input & Action (Restricted to Institution Members) */}
+              {currentUser?.role === 'INSTITUTION_MEMBER' ? (
+                <div className="p-3 bg-slate-50 border border-slate-200 rounded-md space-y-2.5">
+                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg"
+                      onChange={handleFileSelect}
+                      disabled={isUploadingDoc}
+                      className="block w-full text-xs text-slate-600 file:mr-3 file:py-2 file:px-3 file:rounded file:border file:border-slate-300 file:text-xs file:font-semibold file:bg-white file:text-slate-700 hover:file:bg-slate-100 cursor-pointer"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleUploadDocument}
+                      disabled={!selectedUploadFile || isUploadingDoc}
+                      className={`flex items-center justify-center gap-1.5 px-4 py-2 min-h-[38px] text-xs font-semibold rounded shrink-0 transition-colors ${
+                        !selectedUploadFile || isUploadingDoc
+                          ? 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                          : 'bg-blue-600 text-white hover:bg-blue-700 shadow-2xs'
+                      }`}
+                    >
+                      {isUploadingDoc ? (
+                        <>
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          <span>Uploading...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Upload className="w-3.5 h-3.5" />
+                          <span>Upload File</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+
+                  {/* Selected File Details */}
+                  {selectedUploadFile && (
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-[11px] text-slate-600 bg-white p-2 rounded border border-slate-200">
+                      <span className="truncate max-w-xs font-medium text-slate-800">
+                        📄 {selectedUploadFile.name}
+                      </span>
+                      <span className="font-mono text-slate-500 shrink-0">
+                        {formatFileSize(selectedUploadFile.size)} · {selectedUploadFile.type || 'auto-detected'}
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Upload Status Feedback */}
+                  {docUploadSuccess && (
+                    <div className="p-2.5 bg-emerald-50 border border-emerald-200 rounded text-xs text-emerald-800 flex items-start gap-2">
+                      <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                      <div className="flex-1">{docUploadSuccess}</div>
+                      <button
+                        onClick={() => setDocUploadSuccess(null)}
+                        className="text-emerald-600 hover:text-emerald-800 text-xs font-bold"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  )}
+
+                  {docUploadError && (
+                    <div className="p-2.5 bg-rose-50 border border-rose-200 rounded text-xs text-rose-800 flex items-start gap-2">
+                      <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                      <div className="flex-1">{docUploadError}</div>
+                      <button
+                        onClick={() => setDocUploadError(null)}
+                        className="text-rose-600 hover:text-rose-800 text-xs font-bold"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  )}
                 </div>
-
-                {/* Selected File Details */}
-                {selectedUploadFile && (
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-[11px] text-slate-600 bg-white p-2 rounded border border-slate-200">
-                    <span className="truncate max-w-xs font-medium text-slate-800">
-                      📄 {selectedUploadFile.name}
-                    </span>
-                    <span className="font-mono text-slate-500 shrink-0">
-                      {formatFileSize(selectedUploadFile.size)} · {selectedUploadFile.type || 'auto-detected'}
-                    </span>
-                  </div>
-                )}
-
-                {/* Upload Status Feedback */}
-                {docUploadSuccess && (
-                  <div className="p-2.5 bg-emerald-50 border border-emerald-200 rounded text-xs text-emerald-800 flex items-start gap-2">
-                    <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
-                    <div className="flex-1">{docUploadSuccess}</div>
-                    <button
-                      onClick={() => setDocUploadSuccess(null)}
-                      className="text-emerald-600 hover:text-emerald-800 text-xs font-bold"
-                    >
-                      ×
-                    </button>
-                  </div>
-                )}
-
-                {docUploadError && (
-                  <div className="p-2.5 bg-rose-50 border border-rose-200 rounded text-xs text-rose-800 flex items-start gap-2">
-                    <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
-                    <div className="flex-1">{docUploadError}</div>
-                    <button
-                      onClick={() => setDocUploadError(null)}
-                      className="text-rose-600 hover:text-rose-800 text-xs font-bold"
-                    >
-                      ×
-                    </button>
-                  </div>
-                )}
-              </div>
+              ) : (
+                <div className="p-3 bg-slate-50 border border-slate-200 rounded-md text-xs text-slate-600 flex items-center gap-2">
+                  <Info className="w-4 h-4 text-blue-600 shrink-0" />
+                  <span>
+                    <strong>Document Upload Role Policy:</strong> Student dossier submissions are performed by Institution Members. Your account ({currentUser?.role === 'REGULATORY_REVIEWER' ? 'Regulatory Reviewer' : 'System Administrator'}) performs regulatory oversight, extraction verification, and compliance status updates.
+                  </span>
+                </div>
+              )}
 
               {/* Phase 2B: OCR global error banner */}
               {ocrError && (
@@ -1013,7 +1023,7 @@ export const StudentRecordsPage: React.FC = () => {
                                   <Download className="w-3 h-3" />
                                   <span>Download</span>
                                 </button>
-                                {(doc.processingStatus === 'UPLOADED' || doc.processingStatus === 'FAILED') && (
+                                {currentUser?.role !== 'SYSTEM_ADMIN' && (doc.processingStatus === 'UPLOADED' || doc.processingStatus === 'FAILED') && (
                                   <button
                                     onClick={() => handleExtractText(doc.id)}
                                     disabled={!!isExtractingDocId}
@@ -1034,7 +1044,7 @@ export const StudentRecordsPage: React.FC = () => {
                                     Processing…
                                   </span>
                                 )}
-                                {doc.processingStatus === 'COMPLETED' && (
+                                {currentUser?.role !== 'SYSTEM_ADMIN' && doc.processingStatus === 'COMPLETED' && (
                                   <>
                                     <button
                                       onClick={() => handleExtractText(doc.id)}
